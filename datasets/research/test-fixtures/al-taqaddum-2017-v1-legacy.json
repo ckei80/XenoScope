@@ -1,0 +1,306 @@
+{
+  "format": "xenoscope-research-dataset",
+  "formatVersion": 1,
+  "datasetId": "xenoscope.case.al-taqaddum-2017",
+  "datasetVersion": "1.0.0",
+  "referenceConvention": {
+    "recordIdentity": "Dataset records use stable, namespaced keys. These keys are independent of database UUIDs and are not UUID values.",
+    "references": "References use recordKind and recordKey, or the type-specific *Key field. A future importer must resolve keys and must not silently overwrite changed content.",
+    "omittedRecordMetadata": "Database UUIDs and createdAt/createdBy metadata are omitted; persistence is responsible for assigning them."
+  },
+  "sourceAccess": [
+    {
+      "sourceKey": "xenoscope.case.al-taqaddum-2017:source:aaro-report",
+      "canonicalUrl": "https://www.aaro.mil/Portals/136/PDFs/case_resolution_reports/AARO_Al_Taqaddam_Case_Resolution_Final.pdf",
+      "inspectedCopyUrl": "https://web.archive.org/web/20251014135218/https://www.aaro.mil/Portals/136/PDFs/case_resolution_reports/AARO_Al_Taqaddam_Case_Resolution_Final.pdf",
+      "accessNote": "The live official PDF returned HTTP 403 during research. The report was inspected through this Internet Archive replay.",
+      "equivalenceLimitation": "Byte-for-byte equivalence between the archived copy inspected and the current live official PDF has not been established."
+    },
+    {
+      "sourceKey": "xenoscope.case.al-taqaddum-2017:source:dvids-record",
+      "canonicalUrl": "https://www.dvidshub.net/video/960331/al-taqaddum-object",
+      "inspectionNote": "The DVIDS record text and displayed metadata were inspected. The video itself was not played or independently inspected."
+    }
+  ],
+  "sourceMetadata": [
+    {
+      "sourceKey": "xenoscope.case.al-taqaddum-2017:source:aaro-report",
+      "fieldsAsPrinted": {
+        "interiorCaseTitle": "The Al Taqaddum Object",
+        "caseResolutionDate": "8 September 2025",
+        "clearanceStamp": "CLEARED For Open Publication Sep 10, 2025",
+        "filename": "AARO_Al_Taqaddam_Case_Resolution_Final.pdf"
+      },
+      "dateInterpretation": "The document prints a case-resolution date and a separate clearance-stamp date. No publication date is inferred from these fields."
+    },
+    {
+      "sourceKey": "xenoscope.case.al-taqaddum-2017:source:dvids-record",
+      "fieldsAsDisplayed": {
+        "title": "Al Taqaddum Object",
+        "dateTaken": "10.01.2017",
+        "datePosted": "04.29.2025 11:05",
+        "videoId": "960331",
+        "filename": "DOD_110956846",
+        "length": "00:17:27"
+      },
+      "dateInterpretation": "The Date Taken value is preserved literally. Its date notation and relationship to the event date are not resolved."
+    }
+  ],
+  "records": {
+    "incidents": [
+      {
+        "key": "xenoscope.case.al-taqaddum-2017:incident:al-taqaddum-object-report",
+        "label": "Al Taqaddum object report, October 2017"
+      }
+    ],
+    "sources": [
+      {
+        "key": "xenoscope.case.al-taqaddum-2017:source:aaro-report",
+        "sourceKind": "official_record",
+        "title": "The Al Taqaddum Object",
+        "publisher": "All-domain Anomaly Resolution Office (AARO)",
+        "url": "https://www.aaro.mil/Portals/136/PDFs/case_resolution_reports/AARO_Al_Taqaddam_Case_Resolution_Final.pdf",
+        "otherLocator": "Interior case title: The Al Taqaddum Object. Filename: AARO_Al_Taqaddam_Case_Resolution_Final.pdf.",
+        "verificationStatus": "not_assessed"
+      },
+      {
+        "key": "xenoscope.case.al-taqaddum-2017:source:dvids-record",
+        "sourceKind": "web_page",
+        "title": "Al Taqaddum Object",
+        "publisher": "Defense Visual Information Distribution Service (DVIDS)",
+        "url": "https://www.dvidshub.net/video/960331/al-taqaddum-object",
+        "otherLocator": "Video ID 960331; filename DOD_110956846.",
+        "verificationStatus": "not_assessed"
+      }
+    ],
+    "evidenceItems": [
+      {
+        "key": "xenoscope.case.al-taqaddum-2017:evidence:dvids-video-960331",
+        "sourceKey": "xenoscope.case.al-taqaddum-2017:source:dvids-record",
+        "locator": {
+          "kind": "other",
+          "description": "DVIDS video ID 960331; page-listed length 00:17:27."
+        },
+        "evidenceKind": "video",
+        "description": "Video referenced by the DVIDS record. The video itself was not played or independently inspected for this dataset."
+      }
+    ],
+    "claims": [
+      {
+        "key": "xenoscope.case.al-taqaddum-2017:claim:aaro-event-date",
+        "assertionText": "Date: 23 October 2017",
+        "category": "timing",
+        "sourceKey": "xenoscope.case.al-taqaddum-2017:source:aaro-report",
+        "sourceLocator": {
+          "kind": "other",
+          "description": "PDF page 1, Case Synopsis, Date field."
+        },
+        "incidentKey": "xenoscope.case.al-taqaddum-2017:incident:al-taqaddum-object-report",
+        "review": {
+          "status": "unreviewed"
+        }
+      },
+      {
+        "key": "xenoscope.case.al-taqaddum-2017:claim:aaro-overview-duration",
+        "assertionText": "On October 23, 2017, an infrared (IR) sensor aboard an aerostat force protection dirigible (blimp) operating at 2,700 feet above Al Taqaddum Air Base, Iraq, recorded 17 minutes and 30 seconds of footage featuring an unidentified object that appears to be floating above the ground.",
+        "category": "observation",
+        "sourceKey": "xenoscope.case.al-taqaddum-2017:source:aaro-report",
+        "sourceLocator": {
+          "kind": "other",
+          "description": "PDF page 1, Case Overview, opening paragraph."
+        },
+        "incidentKey": "xenoscope.case.al-taqaddum-2017:incident:al-taqaddum-object-report",
+        "review": {
+          "status": "unreviewed"
+        }
+      },
+      {
+        "key": "xenoscope.case.al-taqaddum-2017:claim:aaro-balloon-assessment",
+        "assertionText": "AARO assesses with high confidence that the object was consistent with a cluster of fully and partially inflated balloons (Figure 1).",
+        "category": "identification",
+        "sourceKey": "xenoscope.case.al-taqaddum-2017:source:aaro-report",
+        "sourceLocator": {
+          "kind": "other",
+          "description": "PDF page 1, AARO Assessment and Case Status."
+        },
+        "incidentKey": "xenoscope.case.al-taqaddum-2017:incident:al-taqaddum-object-report",
+        "authorStatedConfidence": {
+          "statedBy": "All-domain Anomaly Resolution Office (AARO)",
+          "valueAsStated": "high confidence",
+          "sourceKey": "xenoscope.case.al-taqaddum-2017:source:aaro-report",
+          "locator": {
+            "kind": "other",
+            "description": "PDF page 1, AARO Assessment and Case Status."
+          }
+        },
+        "review": {
+          "status": "unreviewed"
+        }
+      },
+      {
+        "key": "xenoscope.case.al-taqaddum-2017:claim:aaro-no-anomalous-behavior",
+        "assertionText": "AARO assesses with high confidence that the Al Taqaddum object did not exhibit anomalous behavior or capabilities.",
+        "category": "context",
+        "sourceKey": "xenoscope.case.al-taqaddum-2017:source:aaro-report",
+        "sourceLocator": {
+          "kind": "other",
+          "description": "PDF page 1, AARO Assessment and Case Status."
+        },
+        "incidentKey": "xenoscope.case.al-taqaddum-2017:incident:al-taqaddum-object-report",
+        "authorStatedConfidence": {
+          "statedBy": "All-domain Anomaly Resolution Office (AARO)",
+          "valueAsStated": "high confidence",
+          "sourceKey": "xenoscope.case.al-taqaddum-2017:source:aaro-report",
+          "locator": {
+            "kind": "other",
+            "description": "PDF page 1, AARO Assessment and Case Status."
+          }
+        },
+        "review": {
+          "status": "unreviewed"
+        }
+      },
+      {
+        "key": "xenoscope.case.al-taqaddum-2017:claim:aaro-assessment-basis",
+        "assertionText": "AARO based this assessment on analysis of full-motion video, video metadata, line-of-sight, scenario reconstructions, and weather data analysis.",
+        "category": "context",
+        "sourceKey": "xenoscope.case.al-taqaddum-2017:source:aaro-report",
+        "sourceLocator": {
+          "kind": "other",
+          "description": "PDF page 1, paragraph following AARO Assessment and Case Status."
+        },
+        "incidentKey": "xenoscope.case.al-taqaddum-2017:incident:al-taqaddum-object-report",
+        "review": {
+          "status": "unreviewed"
+        }
+      },
+      {
+        "key": "xenoscope.case.al-taqaddum-2017:claim:aaro-video-stills-caption",
+        "assertionText": "Figure 1: Stills of the UAP from the 17-minute video. Aerostat deployed at Al Taqaddum Air Base. The balloons appear as bulbous, rounded shapes; similarly, the strings and deflated balloons can be seen hanging below. These images were assigned different color temperatures to aid in visualization.",
+        "category": "observation",
+        "sourceKey": "xenoscope.case.al-taqaddum-2017:source:aaro-report",
+        "sourceLocator": {
+          "kind": "other",
+          "description": "PDF page 3, Figure 1 caption."
+        },
+        "incidentKey": "xenoscope.case.al-taqaddum-2017:incident:al-taqaddum-object-report",
+        "review": {
+          "status": "unreviewed"
+        }
+      },
+      {
+        "key": "xenoscope.case.al-taqaddum-2017:claim:dvids-date-taken",
+        "assertionText": "The DVIDS page displays the literal Date Taken value “10.01.2017”.",
+        "category": "timing",
+        "sourceKey": "xenoscope.case.al-taqaddum-2017:source:dvids-record",
+        "sourceLocator": {
+          "kind": "text_fragment",
+          "text": "Date Taken: 10.01.2017"
+        },
+        "incidentKey": "xenoscope.case.al-taqaddum-2017:incident:al-taqaddum-object-report",
+        "review": {
+          "status": "unreviewed"
+        }
+      },
+      {
+        "key": "xenoscope.case.al-taqaddum-2017:claim:dvids-recording-description",
+        "assertionText": "In October 2017, an infrared sensor onboard a force protection aerostat near Al Taqaddum Air Base, Iraq, captured 17 minutes of video of an unidentified object.",
+        "category": "observation",
+        "sourceKey": "xenoscope.case.al-taqaddum-2017:source:dvids-record",
+        "sourceLocator": {
+          "kind": "text_fragment",
+          "text": "In October 2017, an infrared sensor onboard a force protection aerostat near Al Taqaddum Air Base, Iraq, captured 17 minutes of video of an unidentified object."
+        },
+        "incidentKey": "xenoscope.case.al-taqaddum-2017:incident:al-taqaddum-object-report",
+        "review": {
+          "status": "unreviewed"
+        }
+      },
+      {
+        "key": "xenoscope.case.al-taqaddum-2017:claim:dvids-listed-duration",
+        "assertionText": "The DVIDS page lists the video Length as “00:17:27”.",
+        "category": "timing",
+        "sourceKey": "xenoscope.case.al-taqaddum-2017:source:dvids-record",
+        "sourceLocator": {
+          "kind": "text_fragment",
+          "text": "Length: 00:17:27"
+        },
+        "incidentKey": "xenoscope.case.al-taqaddum-2017:incident:al-taqaddum-object-report",
+        "review": {
+          "status": "unreviewed"
+        }
+      },
+      {
+        "key": "xenoscope.case.al-taqaddum-2017:claim:dvids-attributed-balloon-assessment",
+        "assertionText": "AARO assesses that the object was a cluster of partially and fully inflated balloons. The object's appearance is consistent with other recorded observations featuring balloon clusters. AARO employed full-motion video analysis and pixel examination techniques to inform its assessment.",
+        "category": "identification",
+        "sourceKey": "xenoscope.case.al-taqaddum-2017:source:dvids-record",
+        "sourceLocator": {
+          "kind": "text_fragment",
+          "text": "AARO assesses that the object was a cluster of partially and fully inflated balloons. The object's appearance is consistent with other recorded observations featuring balloon clusters. AARO employed full-motion video analysis and pixel examination techniques to inform its assessment."
+        },
+        "incidentKey": "xenoscope.case.al-taqaddum-2017:incident:al-taqaddum-object-report",
+        "review": {
+          "status": "unreviewed"
+        }
+      }
+    ],
+    "relationships": [
+      {
+        "key": "xenoscope.case.al-taqaddum-2017:relationship:aaro-analyses-dvids-video",
+        "kind": "analyses",
+        "from": {
+          "recordKind": "source",
+          "recordKey": "xenoscope.case.al-taqaddum-2017:source:aaro-report"
+        },
+        "to": {
+          "recordKind": "source",
+          "recordKey": "xenoscope.case.al-taqaddum-2017:source:dvids-record"
+        }
+      },
+      {
+        "key": "xenoscope.case.al-taqaddum-2017:relationship:dvids-repeats-aaro-balloon-assessment",
+        "kind": "repeats",
+        "from": {
+          "recordKind": "source",
+          "recordKey": "xenoscope.case.al-taqaddum-2017:source:dvids-record"
+        },
+        "to": {
+          "recordKind": "claim",
+          "recordKey": "xenoscope.case.al-taqaddum-2017:claim:aaro-balloon-assessment"
+        }
+      }
+    ],
+    "relationshipNotes": [
+      {
+        "relationshipKey": "xenoscope.case.al-taqaddum-2017:relationship:aaro-analyses-dvids-video",
+        "basis": "Inferred from matching descriptions: AARO says its assessment used full-motion video and describes Figure 1 as stills from the 17-minute Al Taqaddum video; DVIDS describes an October 2017 infrared-aerostat recording at Al Taqaddum and lists video ID 960331. The inspected AARO report does not explicitly identify the DVIDS URL or video ID. This is not an independent confirmation."
+      },
+      {
+        "relationshipKey": "xenoscope.case.al-taqaddum-2017:relationship:dvids-repeats-aaro-balloon-assessment",
+        "basis": "The DVIDS page explicitly attributes this assessment to AARO. The DVIDS page text is not an independent corroboration of the underlying assessment."
+      }
+    ],
+    "discrepancies": [
+      {
+        "key": "xenoscope.case.al-taqaddum-2017:discrepancy:event-date",
+        "claimKeys": [
+          "xenoscope.case.al-taqaddum-2017:claim:aaro-event-date",
+          "xenoscope.case.al-taqaddum-2017:claim:dvids-date-taken"
+        ],
+        "description": "AARO identifies the event date as 23 October 2017. DVIDS displays the literal Date Taken value 10.01.2017. The notation and meaning of the DVIDS field have not been established here; the difference is unresolved and is not silently interpreted as a confirmed event date.",
+        "status": "open"
+      },
+      {
+        "key": "xenoscope.case.al-taqaddum-2017:discrepancy:recording-duration",
+        "claimKeys": [
+          "xenoscope.case.al-taqaddum-2017:claim:aaro-overview-duration",
+          "xenoscope.case.al-taqaddum-2017:claim:dvids-listed-duration"
+        ],
+        "description": "AARO's Case Overview says 17 minutes and 30 seconds; DVIDS lists Length as 00:17:27. DVIDS also describes the recording as 17 minutes in its opening text. The exact difference between the stated and listed durations is preserved without assuming an explanation.",
+        "status": "open"
+      }
+    ],
+    "findings": []
+  }
+}

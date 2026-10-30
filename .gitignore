@@ -1,0 +1,24 @@
+# Dependencies and build output
+node_modules/
+dist/
+dist-ssr/
+.vite/
+src-tauri/target/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor settings
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Operating system files
+.DS_Store
+Thumbs.db
