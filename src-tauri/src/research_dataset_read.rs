@@ -1,8 +1,9 @@
 use crate::{
     database::Database,
     research_dataset::{
-        DatasetLocation, DatasetTimePeriod, DiscrepancyStatus, ReferenceConvention,
-        RelationshipKind, RelationshipNote, SourceAccess, SourceMetadata,
+        DatasetAuthorStatedConfidence, DatasetLocation, DatasetRecordKind, DatasetRecordReference,
+        DatasetReviewMetadata, DatasetTimePeriod, DiscrepancyStatus, EvidenceKind,
+        ReferenceConvention, RelationshipKind, RelationshipNote, SourceAccess, SourceMetadata,
     },
     research_records::{
         ClaimCategory, RecordActor, ReviewMetadata, SourceKind, SourceLocator,
@@ -196,12 +197,63 @@ struct StableRecord {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct IncidentContentSnapshot {
-    #[serde(rename = "label")]
-    _label: String,
+    label: String,
     description: Option<String>,
     location: Option<DatasetLocation>,
     time_period: Option<DatasetTimePeriod>,
     source_keys: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SourceContentSnapshot {
+    source_kind: SourceKind,
+    title: Option<String>,
+    publisher: Option<String>,
+    author: Option<String>,
+    publication_date: Option<String>,
+    url: Option<String>,
+    other_locator: Option<String>,
+    verification_status: SourceVerificationStatus,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ClaimContentSnapshot {
+    assertion_text: String,
+    category: ClaimCategory,
+    source_key: String,
+    source_locator: SourceLocator,
+    incident_key: Option<String>,
+    author_stated_confidence: Option<DatasetAuthorStatedConfidence>,
+    #[serde(rename = "review")]
+    _review: DatasetReviewMetadata,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct EvidenceContentSnapshot {
+    source_key: String,
+    locator: SourceLocator,
+    evidence_kind: EvidenceKind,
+    description: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RelationshipContentSnapshot {
+    kind: RelationshipKind,
+    from: DatasetRecordReference,
+    to: DatasetRecordReference,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DiscrepancyContentSnapshot {
+    claim_keys: Vec<String>,
+    description: String,
+    #[serde(rename = "status")]
+    _status: DiscrepancyStatus,
 }
 
 impl StableRecord {
@@ -337,11 +389,6 @@ pub(crate) fn assemble_research_case(
     if by_key.len() != records.len() {
         return Err("Stored dataset mappings contain duplicate stable keys".to_string());
     }
-    let by_id = records
-        .iter()
-        .cloned()
-        .map(|record| (record.record_id.clone(), record))
-        .collect::<HashMap<_, _>>();
     let manifest = load_manifest(transaction, dataset_id, import_sequence)?;
     validate_manifest(&manifest, &by_key)?;
     validate_metadata_references(&metadata, &by_key)?;
@@ -358,7 +405,7 @@ pub(crate) fn assemble_research_case(
         sources,
         evidence_items: load_evidence_items(transaction, &manifest, &by_key)?,
         claims: load_claims(transaction, &manifest, &by_key)?,
-        relationships: load_relationships(transaction, &manifest, &by_key, &by_id)?,
+        relationships: load_relationships(transaction, &manifest, &by_key)?,
         discrepancies: load_discrepancies(transaction, &manifest, &by_key)?,
         findings: load_findings(transaction, &manifest, &by_key)?,
     })
@@ -600,15 +647,23 @@ fn load_incidents(
             .map_err(|error| {
                 format!("Stored incident content snapshot for {key:?} is malformed: {error}")
             })?;
-        let label: String = transaction
+        let incident_exists: bool = transaction
             .query_row(
-                "SELECT label FROM incidents WHERE record_id = ?1 AND record_kind = 'incident'",
+                "SELECT EXISTS(
+                    SELECT 1 FROM incidents
+                    WHERE record_id = ?1 AND record_kind = 'incident'
+                 )",
                 [&record.record_id],
                 |row| row.get(0),
             )
-            .optional()
-            .map_err(|error| format!("Could not read incident {key:?}: {error}"))?
-            .ok_or_else(|| format!("Missing incident domain data for stable key {key:?}"))?;
+            .map_err(|error| {
+                format!("Could not verify incident domain data for {key:?}: {error}")
+            })?;
+        if !incident_exists {
+            return Err(format!(
+                "Missing incident domain data for stable key {key:?}"
+            ));
+        }
 
         let (description, location, time_period, incident_sources) = match format_version {
             1 => {
@@ -679,7 +734,7 @@ fn load_incidents(
         };
         result.push(ResearchIncidentDto {
             record: record.metadata(transaction)?,
-            label,
+            label: snapshot.label,
             description,
             location,
             time_period,
@@ -697,60 +752,33 @@ fn load_sources(
     let mut result = Vec::new();
     for key in keys_of_kind(manifest, mappings, "source") {
         let record = require_record(&key, "source", mappings)?;
-        let row: Option<(
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            String,
-        )> = transaction
+        let snapshot: SourceContentSnapshot = serde_json::from_str(&record.content_snapshot_json)
+            .map_err(|error| {
+            format!("Stored source content snapshot for {key:?} is malformed: {error}")
+        })?;
+        let source_exists: bool = transaction
             .query_row(
-                "SELECT source_kind, title, publisher, author, publication_date, url,
-                            other_locator, verification_status
-                     FROM sources
-                     WHERE record_id = ?1 AND record_kind = 'source'",
+                "SELECT EXISTS(
+                SELECT 1 FROM sources
+                WHERE record_id = ?1 AND record_kind = 'source'
+             )",
                 [&record.record_id],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
-                        row.get(7)?,
-                    ))
-                },
+                |row| row.get(0),
             )
-            .optional()
-            .map_err(|error| format!("Could not read source {key:?}: {error}"))?;
-        let (
-            source_kind,
-            title,
-            publisher,
-            author,
-            publication_date,
-            url,
-            other_locator,
-            verification_status,
-        ) = row.ok_or_else(|| format!("Missing source domain data for stable key {key:?}"))?;
+            .map_err(|error| format!("Could not verify source domain data for {key:?}: {error}"))?;
+        if !source_exists {
+            return Err(format!("Missing source domain data for stable key {key:?}"));
+        }
         result.push(ResearchSourceDto {
             record: record.metadata(transaction)?,
-            source_kind: parse_enum(&source_kind, &format!("{key}.sourceKind"))?,
-            title,
-            publisher,
-            author,
-            publication_date,
-            url,
-            other_locator,
-            verification_status: parse_enum(
-                &verification_status,
-                &format!("{key}.verificationStatus"),
-            )?,
+            source_kind: snapshot.source_kind,
+            title: snapshot.title,
+            publisher: snapshot.publisher,
+            author: snapshot.author,
+            publication_date: snapshot.publication_date,
+            url: snapshot.url,
+            other_locator: snapshot.other_locator,
+            verification_status: snapshot.verification_status,
         });
     }
     Ok(result)
@@ -764,35 +792,41 @@ fn load_evidence_items(
     let mut result = Vec::new();
     for key in keys_of_kind(manifest, mappings, "evidence_item") {
         let record = require_record(&key, "evidence_item", mappings)?;
-        let row: Option<(String, String, String, String, String)> = transaction
+        let snapshot: EvidenceContentSnapshot = serde_json::from_str(&record.content_snapshot_json)
+            .map_err(|error| {
+                format!("Stored evidence content snapshot for {key:?} is malformed: {error}")
+            })?;
+        validate_snapshot_locator(&snapshot.locator, &format!("{key}.locator"))?;
+        let exists: bool = transaction
             .query_row(
-                "SELECT source_id, locator_kind, locator_json, evidence_kind, description
-                 FROM evidence_items
-                 WHERE record_id = ?1 AND record_kind = 'evidence_item'",
+                "SELECT EXISTS(
+                    SELECT 1 FROM evidence_items
+                    WHERE record_id = ?1 AND record_kind = 'evidence_item'
+                 )",
                 [&record.record_id],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
+                |row| row.get(0),
             )
-            .optional()
-            .map_err(|error| format!("Could not read evidence item {key:?}: {error}"))?;
-        let (source_id, locator_kind, locator_json, evidence_kind, description) =
-            row.ok_or_else(|| format!("Missing evidence domain data for stable key {key:?}"))?;
-        let source = reference_by_id(&source_id, "source", mappings)?;
-        let locator: SourceLocator = decode_json(&locator_json, &format!("{key}.locator"))?;
-        validate_locator_kind(&locator, &locator_kind, &key)?;
+            .map_err(|error| {
+                format!("Could not verify evidence domain data for {key:?}: {error}")
+            })?;
+        if !exists {
+            return Err(format!(
+                "Missing evidence domain data for stable key {key:?}"
+            ));
+        }
+        let source = resolve_snapshot_reference(
+            &snapshot.source_key,
+            "source",
+            &key,
+            "sourceKey",
+            mappings,
+        )?;
         result.push(ResearchEvidenceItemDto {
             record: record.metadata(transaction)?,
             source,
-            locator,
-            evidence_kind: parse_enum(&evidence_kind, &format!("{key}.evidenceKind"))?,
-            description,
+            locator: snapshot.locator,
+            evidence_kind: snapshot.evidence_kind,
+            description: snapshot.description,
         });
     }
     Ok(result)
@@ -806,62 +840,62 @@ fn load_claims(
     let mut result = Vec::new();
     for key in keys_of_kind(manifest, mappings, "claim") {
         let record = require_record(&key, "claim", mappings)?;
-        let row: Option<(
-            String,
-            String,
-            String,
-            String,
-            Option<String>,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        )> = transaction
-            .query_row(
-                "SELECT assertion_text, category, source_id, source_locator_kind,
-                        incident_id, source_locator_json, review_status, reviewed_at,
-                        reviewed_by_kind, reviewed_by_name
+        let snapshot: ClaimContentSnapshot = serde_json::from_str(&record.content_snapshot_json)
+            .map_err(|error| {
+                format!("Stored claim content snapshot for {key:?} is malformed: {error}")
+            })?;
+        validate_snapshot_locator(&snapshot.source_locator, &format!("{key}.sourceLocator"))?;
+        let review_row: Option<(String, Option<String>, Option<String>, Option<String>)> =
+            transaction
+                .query_row(
+                    "SELECT review_status, reviewed_at, reviewed_by_kind, reviewed_by_name
                  FROM claims
                  WHERE record_id = ?1 AND record_kind = 'claim'",
-                [&record.record_id],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
-                        row.get(7)?,
-                        row.get(8)?,
-                        row.get(9)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(|error| format!("Could not read claim {key:?}: {error}"))?;
-        let (
-            assertion_text,
-            category,
-            source_id,
-            locator_kind,
-            incident_id,
-            locator_json,
-            review_status,
-            reviewed_at,
-            reviewed_by_kind,
-            reviewed_by_name,
-        ) = row.ok_or_else(|| format!("Missing claim domain data for stable key {key:?}"))?;
-        let source_locator: SourceLocator =
-            decode_json(&locator_json, &format!("{key}.sourceLocator"))?;
-        validate_locator_kind(&source_locator, &locator_kind, &key)?;
-        let incident = incident_id
+                    [&record.record_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()
+                .map_err(|error| format!("Could not read claim {key:?}: {error}"))?;
+        let (review_status, reviewed_at, reviewed_by_kind, reviewed_by_name) = review_row
+            .ok_or_else(|| format!("Missing claim domain data for stable key {key:?}"))?;
+        let source = resolve_snapshot_reference(
+            &snapshot.source_key,
+            "source",
+            &key,
+            "sourceKey",
+            mappings,
+        )?;
+        let incident = snapshot
+            .incident_key
             .as_deref()
-            .map(|id| reference_by_id(id, "incident", mappings))
+            .map(|incident_key| {
+                resolve_snapshot_reference(incident_key, "incident", &key, "incidentKey", mappings)
+            })
             .transpose()?;
-        let confidence = load_confidence(transaction, &key, &record.record_id, mappings)?;
+        let confidence = snapshot
+            .author_stated_confidence
+            .map(|confidence| {
+                let source = resolve_snapshot_reference(
+                    &confidence.source_key,
+                    "source",
+                    &key,
+                    "authorStatedConfidence.sourceKey",
+                    mappings,
+                )?;
+                if let Some(locator) = &confidence.locator {
+                    validate_snapshot_locator(
+                        locator,
+                        &format!("{key}.authorStatedConfidence.locator"),
+                    )?;
+                }
+                Ok::<_, String>(CaseAuthorStatedConfidenceDto {
+                    stated_by: confidence.stated_by,
+                    value_as_stated: confidence.value_as_stated,
+                    source,
+                    locator: confidence.locator,
+                })
+            })
+            .transpose()?;
         let review = ReviewMetadata {
             status: parse_enum(&review_status, &format!("{key}.review.status"))?,
             reviewed_at,
@@ -876,10 +910,10 @@ fn load_claims(
         };
         result.push(ResearchClaimDto {
             record: record.metadata(transaction)?,
-            assertion_text,
-            category: parse_enum(&category, &format!("{key}.category"))?,
-            source: reference_by_id(&source_id, "source", mappings)?,
-            source_locator,
+            assertion_text: snapshot.assertion_text,
+            category: snapshot.category,
+            source,
+            source_locator: snapshot.source_locator,
             incident,
             author_stated_confidence: confidence,
             review,
@@ -888,88 +922,60 @@ fn load_claims(
     Ok(result)
 }
 
-fn load_confidence(
-    transaction: &Transaction<'_>,
-    key: &str,
-    claim_id: &str,
+fn resolve_snapshot_reference(
+    reference_key: &str,
+    expected_kind: &str,
+    owner_key: &str,
+    field: &str,
     mappings: &HashMap<String, StableRecord>,
-) -> Result<Option<CaseAuthorStatedConfidenceDto>, String> {
-    let row: Option<(String, String, String, Option<String>, Option<String>)> = transaction
-        .query_row(
-            "SELECT stated_by, value_as_stated, source_id, locator_kind, locator_json
-             FROM claim_author_confidence WHERE claim_id = ?1",
-            [claim_id],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(|error| format!("Could not read author-stated confidence for {key:?}: {error}"))?;
-    let Some((stated_by, value_as_stated, source_id, locator_kind, locator_json)) = row else {
-        return Ok(None);
-    };
-    let locator = match (locator_kind, locator_json) {
-        (None, None) => None,
-        (Some(kind), Some(json)) => {
-            let locator: SourceLocator = decode_json(&json, &format!("{key}.confidence.locator"))?;
-            validate_locator_kind(&locator, &kind, key)?;
-            Some(locator)
-        }
-        _ => {
-            return Err(format!(
-                "Stored author-stated confidence locator is incomplete for {key:?}"
-            ));
-        }
-    };
-    Ok(Some(CaseAuthorStatedConfidenceDto {
-        stated_by,
-        value_as_stated,
-        source: reference_by_id(&source_id, "source", mappings)?,
-        locator,
-    }))
+) -> Result<CaseRecordReferenceDto, String> {
+    require_record(reference_key, expected_kind, mappings)
+        .map(StableRecord::reference)
+        .map_err(|error| {
+            format!("Stored record {owner_key:?} has invalid {field} reference: {error}")
+        })
+}
+
+fn validate_snapshot_locator(locator: &SourceLocator, field: &str) -> Result<(), String> {
+    locator
+        .validate()
+        .map_err(|error| format!("Stored {field} locator is invalid: {error}"))
 }
 
 fn load_relationships(
     transaction: &Transaction<'_>,
     manifest: &[String],
     mappings: &HashMap<String, StableRecord>,
-    by_id: &HashMap<String, StableRecord>,
 ) -> Result<Vec<ResearchRelationshipDto>, String> {
     let mut result = Vec::new();
     for key in keys_of_kind(manifest, mappings, "relationship") {
         let record = require_record(&key, "relationship", mappings)?;
-        let row: Option<(String, String, String, String, String)> = transaction
-            .query_row(
-                "SELECT relationship_kind, from_record_id, from_record_kind,
-                        to_record_id, to_record_kind
-                 FROM relationships
-                 WHERE record_id = ?1 AND record_kind = 'relationship'",
-                [&record.record_id],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(|error| format!("Could not read relationship {key:?}: {error}"))?;
-        let (relationship_kind, from_id, from_kind, to_id, to_kind) =
-            row.ok_or_else(|| format!("Missing relationship domain data for stable key {key:?}"))?;
-        let from = reference_by_id_and_kind(&from_id, &from_kind, by_id, &key)?;
-        let to = reference_by_id_and_kind(&to_id, &to_kind, by_id, &key)?;
+        let snapshot: RelationshipContentSnapshot =
+            serde_json::from_str(&record.content_snapshot_json).map_err(|error| {
+                format!("Stored relationship content snapshot for {key:?} is malformed: {error}")
+            })?;
+        if snapshot.from.record_key == snapshot.to.record_key {
+            return Err(format!(
+                "Stored relationship snapshot for {key:?} references the same record at both endpoints"
+            ));
+        }
+        let from = resolve_snapshot_reference(
+            &snapshot.from.record_key,
+            snapshot_record_kind(snapshot.from.record_kind)?,
+            &key,
+            "from",
+            mappings,
+        )?;
+        let to = resolve_snapshot_reference(
+            &snapshot.to.record_key,
+            snapshot_record_kind(snapshot.to.record_kind)?,
+            &key,
+            "to",
+            mappings,
+        )?;
         result.push(ResearchRelationshipDto {
             record: record.metadata(transaction)?,
-            relationship_kind: parse_enum(&relationship_kind, &format!("{key}.kind"))?,
+            relationship_kind: snapshot.kind,
             from,
             to,
         });
@@ -985,46 +991,61 @@ fn load_discrepancies(
     let mut result = Vec::new();
     for key in keys_of_kind(manifest, mappings, "discrepancy") {
         let record = require_record(&key, "discrepancy", mappings)?;
-        let row: Option<(String, String)> = transaction
+        let snapshot: DiscrepancyContentSnapshot =
+            serde_json::from_str(&record.content_snapshot_json).map_err(|error| {
+                format!("Stored discrepancy content snapshot for {key:?} is malformed: {error}")
+            })?;
+        if snapshot.claim_keys.len() < 2 {
+            return Err(format!(
+                "Stored discrepancy snapshot for {key:?} must reference at least two claims"
+            ));
+        }
+        if snapshot.claim_keys.iter().collect::<HashSet<_>>().len() != snapshot.claim_keys.len() {
+            return Err(format!(
+                "Stored discrepancy snapshot for {key:?} contains duplicate claim keys"
+            ));
+        }
+        let status: Option<String> = transaction
             .query_row(
-                "SELECT description, status FROM discrepancies
+                "SELECT status FROM discrepancies
                  WHERE record_id = ?1 AND record_kind = 'discrepancy'",
                 [&record.record_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             )
             .optional()
             .map_err(|error| format!("Could not read discrepancy {key:?}: {error}"))?;
-        let (description, status) =
-            row.ok_or_else(|| format!("Missing discrepancy domain data for stable key {key:?}"))?;
-        let mut statement = transaction
-            .prepare(
-                "SELECT dc.claim_id
-                 FROM discrepancy_claims dc
-                 WHERE dc.discrepancy_id = ?1
-                 ORDER BY dc.claim_id",
-            )
-            .map_err(|error| format!("Could not prepare discrepancy references: {error}"))?;
-        let claim_ids = statement
-            .query_map([&record.record_id], |row| row.get::<_, String>(0))
-            .map_err(|error| {
-                format!("Could not query discrepancy references for {key:?}: {error}")
-            })?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| {
-                format!("Could not read discrepancy references for {key:?}: {error}")
-            })?;
-        let claim_references = claim_ids
+        let status = status
+            .ok_or_else(|| format!("Missing discrepancy domain data for stable key {key:?}"))?;
+        let claim_references = snapshot
+            .claim_keys
             .iter()
-            .map(|id| reference_by_id(id, "claim", mappings))
+            .map(|claim_key| {
+                resolve_snapshot_reference(claim_key, "claim", &key, "claimKeys", mappings)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         result.push(ResearchDiscrepancyDto {
             record: record.metadata(transaction)?,
             claim_references,
-            description,
+            description: snapshot.description,
             status: parse_enum(&status, &format!("{key}.status"))?,
         });
     }
     Ok(result)
+}
+
+fn snapshot_record_kind(kind: DatasetRecordKind) -> Result<&'static str, String> {
+    match kind {
+        DatasetRecordKind::Incident => Ok("incident"),
+        DatasetRecordKind::Source => Ok("source"),
+        DatasetRecordKind::EvidenceItem => Ok("evidence"),
+        DatasetRecordKind::Claim => Ok("claim"),
+        DatasetRecordKind::Relationship => Ok("relationship"),
+        DatasetRecordKind::Discrepancy => Ok("discrepancy"),
+        DatasetRecordKind::Finding => Ok("finding"),
+        DatasetRecordKind::History => {
+            Err("Relationship endpoints cannot reference history records".to_string())
+        }
+    }
 }
 
 fn load_findings(
@@ -1195,24 +1216,6 @@ fn validate_metadata_references(
     Ok(())
 }
 
-fn reference_by_id_and_kind(
-    id: &str,
-    kind: &str,
-    mappings: &HashMap<String, StableRecord>,
-    owner_key: &str,
-) -> Result<CaseRecordReferenceDto, String> {
-    let record = mappings
-        .values()
-        .find(|record| record.record_id == id)
-        .ok_or_else(|| format!("Relationship {owner_key:?} points to unmapped record ID {id:?}"))?;
-    if record.record_kind != kind {
-        return Err(format!(
-            "Relationship {owner_key:?} endpoint kind mismatch for record ID {id:?}"
-        ));
-    }
-    Ok(record.reference())
-}
-
 fn keys_of_kind(
     manifest: &[String],
     mappings: &HashMap<String, StableRecord>,
@@ -1234,26 +1237,6 @@ fn keys_of_kind(
 fn parse_enum<T: DeserializeOwned>(value: &str, field: &str) -> Result<T, String> {
     serde_json::from_value(serde_json::Value::String(value.to_string()))
         .map_err(|error| format!("Stored {field} is invalid: {error}"))
-}
-
-fn decode_json<T: DeserializeOwned>(value: &str, field: &str) -> Result<T, String> {
-    serde_json::from_str(value).map_err(|error| format!("Stored {field} is invalid JSON: {error}"))
-}
-
-fn validate_locator_kind(
-    locator: &SourceLocator,
-    saved_kind: &str,
-    field: &str,
-) -> Result<(), String> {
-    locator
-        .validate()
-        .map_err(|error| format!("Stored {field} locator is invalid: {error}"))?;
-    if locator.kind() != saved_kind {
-        return Err(format!(
-            "Stored {field} locator type does not match its saved kind"
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1310,6 +1293,40 @@ mod tests {
             )
             .expect("copy stable mappings to isolated identity");
         transaction.commit().expect("commit isolated dataset clone");
+    }
+
+    fn mutate_snapshot(
+        database: &Database,
+        record_key: &str,
+        mutate: impl FnOnce(&mut serde_json::Value),
+    ) {
+        let mut connection = database.connection().expect("lock isolated database");
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("begin test snapshot mutation");
+        let snapshot_json: String = transaction
+            .query_row(
+                "SELECT content_snapshot_json FROM dataset_record_mappings
+                 WHERE dataset_id = ?1 AND record_key = ?2",
+                params![BUNDLED_DATASET_ID, record_key],
+                |row| row.get(0),
+            )
+            .expect("read canonical snapshot");
+        let mut snapshot: serde_json::Value =
+            serde_json::from_str(&snapshot_json).expect("parse canonical snapshot");
+        mutate(&mut snapshot);
+        transaction
+            .execute(
+                "UPDATE dataset_record_mappings SET content_snapshot_json = ?1
+                 WHERE dataset_id = ?2 AND record_key = ?3",
+                params![
+                    serde_json::to_string(&snapshot).expect("serialize changed snapshot"),
+                    BUNDLED_DATASET_ID,
+                    record_key
+                ],
+            )
+            .expect("persist changed snapshot");
+        transaction.commit().expect("commit changed snapshot");
     }
 
     #[test]
@@ -1437,6 +1454,417 @@ mod tests {
     }
 
     #[test]
+    fn reads_incident_label_from_manifest_snapshot_after_live_label_edit() {
+        let database = Database::in_memory().expect("initialize isolated database");
+        import_bundled_dataset(&database).expect("import v2 fixture");
+        let incident_key = "xenoscope.case.al-taqaddum-2017:incident:al-taqaddum-object-report-v2";
+
+        {
+            let connection = database.connection().expect("lock isolated database");
+            let incident_id: String = connection
+                .query_row(
+                    "SELECT record_id FROM dataset_record_mappings
+                     WHERE dataset_id = ?1 AND record_key = ?2",
+                    params![BUNDLED_DATASET_ID, incident_key],
+                    |row| row.get(0),
+                )
+                .expect("find mapped incident");
+            connection
+                .execute(
+                    "UPDATE incidents SET label = 'Edited live label' WHERE record_id = ?1",
+                    [incident_id],
+                )
+                .expect("edit live incident label");
+        }
+
+        let case = read_research_case(&database, BUNDLED_DATASET_ID)
+            .expect("read imported case")
+            .expect("case exists");
+        assert_eq!(
+            case.incidents[0].label,
+            "Al Taqaddum object report, October 2017"
+        );
+    }
+
+    #[test]
+    fn reads_source_content_from_manifest_snapshots_after_live_source_edits() {
+        let database = Database::in_memory().expect("initialize isolated database");
+        import_bundled_dataset(&database).expect("import v2 fixture");
+        let source_key = "xenoscope.case.al-taqaddum-2017:source:aaro-report";
+
+        {
+            let connection = database.connection().expect("lock isolated database");
+            let source_id: String = connection
+                .query_row(
+                    "SELECT record_id FROM dataset_record_mappings
+                     WHERE dataset_id = ?1 AND record_key = ?2",
+                    params![BUNDLED_DATASET_ID, source_key],
+                    |row| row.get(0),
+                )
+                .expect("find mapped source");
+            connection
+                .execute(
+                    "UPDATE sources SET title = 'Edited live title',
+                         publisher = 'Edited live publisher'
+                     WHERE record_id = ?1",
+                    [source_id],
+                )
+                .expect("edit live source content");
+        }
+
+        let case = read_research_case(&database, BUNDLED_DATASET_ID)
+            .expect("read imported case")
+            .expect("case exists");
+        let source = case
+            .sources
+            .iter()
+            .find(|source| source.record.dataset_key == source_key)
+            .expect("source exists in selected manifest");
+        assert_eq!(source.title.as_deref(), Some("The Al Taqaddum Object"));
+        assert_eq!(
+            source.publisher.as_deref(),
+            Some("All-domain Anomaly Resolution Office (AARO)")
+        );
+        let incident_source = case.incidents[0]
+            .sources
+            .as_ref()
+            .expect("incident sources")
+            .iter()
+            .find(|source| source.record.dataset_key == source_key)
+            .expect("incident references source");
+        assert_eq!(incident_source, source);
+        assert_eq!(
+            incident_source.title.as_deref(),
+            Some("The Al Taqaddum Object")
+        );
+        assert_eq!(
+            incident_source.publisher.as_deref(),
+            Some("All-domain Anomaly Resolution Office (AARO)")
+        );
+    }
+
+    #[test]
+    fn malformed_source_content_snapshot_fails_explicitly() {
+        let database = Database::in_memory().expect("initialize isolated database");
+        import_bundled_dataset(&database).expect("import v2 fixture");
+        let source_key = "xenoscope.case.al-taqaddum-2017:source:aaro-report";
+
+        {
+            let connection = database.connection().expect("lock isolated database");
+            connection
+                .execute(
+                    "UPDATE dataset_record_mappings
+                     SET content_snapshot_json = '{\"title\":\"missing required fields\"}'
+                     WHERE dataset_id = ?1 AND record_key = ?2",
+                    params![BUNDLED_DATASET_ID, source_key],
+                )
+                .expect("replace source snapshot with incompatible content");
+        }
+
+        let error = read_research_case(&database, BUNDLED_DATASET_ID)
+            .expect_err("incompatible source snapshot should fail");
+        assert!(error.contains("source content snapshot") && error.contains("malformed"));
+    }
+
+    #[test]
+    fn reads_claim_content_from_snapshot_and_review_state_from_live_row() {
+        let database = Database::in_memory().expect("initialize isolated database");
+        import_bundled_dataset(&database).expect("import v2 fixture");
+        let claim_key = "xenoscope.case.al-taqaddum-2017:claim:aaro-balloon-assessment-v2";
+        let aaro_source_key = "xenoscope.case.al-taqaddum-2017:source:aaro-report";
+        let dvids_source_key = "xenoscope.case.al-taqaddum-2017:source:dvids-record";
+        let incident_key = "xenoscope.case.al-taqaddum-2017:incident:al-taqaddum-object-report-v2";
+
+        {
+            let connection = database.connection().expect("lock isolated database");
+            let ids = |record_key: &str| {
+                connection
+                    .query_row(
+                        "SELECT record_id FROM dataset_record_mappings
+                         WHERE dataset_id = ?1 AND record_key = ?2",
+                        params![BUNDLED_DATASET_ID, record_key],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .expect("find mapped record")
+            };
+            let claim_id = ids(claim_key);
+            let alternate_source_id = ids(dvids_source_key);
+            connection
+                .execute(
+                    "UPDATE claims
+                     SET assertion_text = 'Edited live assertion',
+                         category = 'context',
+                         source_id = ?1,
+                         source_locator_kind = 'page',
+                         source_locator_json = '{\"kind\":\"page\",\"page\":99}',
+                         incident_id = NULL,
+                         review_status = 'in_review',
+                         reviewed_at = '2026-11-01T00:00:00Z',
+                         reviewed_by_kind = 'researcher',
+                         reviewed_by_name = 'Test Reviewer'
+                     WHERE record_id = ?2",
+                    params![alternate_source_id, claim_id],
+                )
+                .expect("edit live claim and review fields");
+            connection
+                .execute(
+                    "UPDATE claim_author_confidence
+                     SET stated_by = 'Edited live author',
+                         value_as_stated = 'edited confidence',
+                         source_id = ?1,
+                         locator_kind = 'page',
+                         locator_json = '{\"kind\":\"page\",\"page\":99}'
+                     WHERE claim_id = ?2",
+                    params![alternate_source_id, claim_id],
+                )
+                .expect("edit live author-stated confidence");
+        }
+
+        let case = read_research_case(&database, BUNDLED_DATASET_ID)
+            .expect("read imported case")
+            .expect("case exists");
+        let claim = case
+            .claims
+            .iter()
+            .find(|claim| claim.record.dataset_key == claim_key)
+            .expect("claim exists");
+        assert_eq!(
+            claim.assertion_text,
+            "AARO assesses with high confidence that the object was consistent with a cluster of fully and partially inflated balloons (Figure 1)."
+        );
+        assert_eq!(claim.category, ClaimCategory::Identification);
+        assert_eq!(claim.source.dataset_key, aaro_source_key);
+        assert_eq!(claim.source.record_id, case.sources[0].record.id);
+        assert_eq!(claim.source.record_kind, "source");
+        assert_eq!(claim.incident.as_ref().unwrap().dataset_key, incident_key);
+        assert_eq!(claim.incident.as_ref().unwrap().record_kind, "incident");
+        assert!(matches!(
+            claim.source_locator,
+            SourceLocator::Other { ref description }
+                if description == "PDF page 1, AARO Assessment and Case Status."
+        ));
+        let confidence = claim
+            .author_stated_confidence
+            .as_ref()
+            .expect("imported confidence exists");
+        assert_eq!(
+            confidence.stated_by,
+            "All-domain Anomaly Resolution Office (AARO)"
+        );
+        assert_eq!(confidence.value_as_stated, "high confidence");
+        assert_eq!(confidence.source.dataset_key, aaro_source_key);
+        assert_eq!(confidence.source.record_kind, "source");
+        assert!(matches!(
+            confidence.locator,
+            Some(SourceLocator::Other { ref description })
+                if description == "PDF page 1, AARO Assessment and Case Status."
+        ));
+        assert_eq!(claim.review.status, ClaimReviewStatus::InReview);
+        assert_eq!(
+            claim.review.reviewed_at.as_deref(),
+            Some("2026-11-01T00:00:00Z")
+        );
+        assert_eq!(
+            claim
+                .review
+                .reviewed_by
+                .as_ref()
+                .unwrap()
+                .display_name
+                .as_deref(),
+            Some("Test Reviewer")
+        );
+    }
+
+    #[test]
+    fn reads_evidence_content_and_source_from_snapshot_after_live_edits() {
+        let database = Database::in_memory().expect("initialize isolated database");
+        import_bundled_dataset(&database).expect("import v2 fixture");
+        let evidence_key = "xenoscope.case.al-taqaddum-2017:evidence:dvids-video-960331";
+        let dvids_source_key = "xenoscope.case.al-taqaddum-2017:source:dvids-record";
+        let aaro_source_key = "xenoscope.case.al-taqaddum-2017:source:aaro-report";
+
+        {
+            let connection = database.connection().expect("lock isolated database");
+            let evidence_id: String = connection
+                .query_row(
+                    "SELECT record_id FROM dataset_record_mappings
+                     WHERE dataset_id = ?1 AND record_key = ?2",
+                    params![BUNDLED_DATASET_ID, evidence_key],
+                    |row| row.get(0),
+                )
+                .expect("find mapped evidence");
+            let alternate_source_id: String = connection
+                .query_row(
+                    "SELECT record_id FROM dataset_record_mappings
+                     WHERE dataset_id = ?1 AND record_key = ?2",
+                    params![BUNDLED_DATASET_ID, aaro_source_key],
+                    |row| row.get(0),
+                )
+                .expect("find alternate source");
+            connection
+                .execute(
+                    "UPDATE evidence_items
+                     SET source_id = ?1, locator_kind = 'page',
+                         locator_json = '{\"kind\":\"page\",\"page\":99}',
+                         evidence_kind = 'document', description = 'Edited live evidence'
+                     WHERE record_id = ?2",
+                    params![alternate_source_id, evidence_id],
+                )
+                .expect("edit live evidence");
+        }
+
+        let case = read_research_case(&database, BUNDLED_DATASET_ID)
+            .expect("read imported case")
+            .expect("case exists");
+        let evidence = &case.evidence_items[0];
+        assert_eq!(evidence.record.dataset_key, evidence_key);
+        assert_eq!(evidence.source.dataset_key, dvids_source_key);
+        assert_eq!(evidence.source.record_kind, "source");
+        assert!(case.sources.iter().any(|source| {
+            source.record.dataset_key == dvids_source_key
+                && source.record.id == evidence.source.record_id
+        }));
+        assert!(matches!(
+            evidence.locator,
+            SourceLocator::Other { ref description }
+                if description == "DVIDS video ID 960331; page-listed length 00:17:27."
+        ));
+        assert_eq!(evidence.evidence_kind, EvidenceKind::Video);
+        assert_eq!(
+            evidence.description,
+            "Video referenced by the DVIDS record. The video itself was not played or independently inspected for this dataset."
+        );
+    }
+
+    #[test]
+    fn claim_and_evidence_snapshot_references_must_resolve_in_selected_manifest() {
+        let claim_key = "xenoscope.case.al-taqaddum-2017:claim:aaro-balloon-assessment-v2";
+        let evidence_key = "xenoscope.case.al-taqaddum-2017:evidence:dvids-video-960331";
+        let cases = [
+            (
+                claim_key,
+                "sourceKey",
+                "xenoscope.case.al-taqaddum-2017:source:missing",
+                "missing stable key",
+            ),
+            (
+                claim_key,
+                "sourceKey",
+                "xenoscope.case.al-taqaddum-2017:claim:aaro-event-date-v2",
+                "expected source",
+            ),
+            (
+                claim_key,
+                "incidentKey",
+                "xenoscope.case.al-taqaddum-2017:incident:missing",
+                "missing stable key",
+            ),
+            (
+                claim_key,
+                "incidentKey",
+                "xenoscope.case.al-taqaddum-2017:source:aaro-report",
+                "expected incident",
+            ),
+            (
+                claim_key,
+                "authorStatedConfidence.sourceKey",
+                "xenoscope.case.al-taqaddum-2017:source:missing",
+                "missing stable key",
+            ),
+            (
+                claim_key,
+                "authorStatedConfidence.sourceKey",
+                "xenoscope.case.al-taqaddum-2017:claim:aaro-event-date-v2",
+                "expected source",
+            ),
+            (
+                evidence_key,
+                "sourceKey",
+                "xenoscope.case.al-taqaddum-2017:source:missing",
+                "missing stable key",
+            ),
+            (
+                evidence_key,
+                "sourceKey",
+                "xenoscope.case.al-taqaddum-2017:claim:aaro-event-date-v2",
+                "expected source",
+            ),
+        ];
+
+        for (record_key, reference_path, reference, expected_error) in cases {
+            let database = Database::in_memory().expect("initialize isolated database");
+            import_bundled_dataset(&database).expect("import v2 fixture");
+            mutate_snapshot(&database, record_key, |snapshot| match reference_path {
+                "authorStatedConfidence.sourceKey" => {
+                    snapshot["authorStatedConfidence"]["sourceKey"] = serde_json::json!(reference);
+                }
+                field => snapshot[field] = serde_json::json!(reference),
+            });
+
+            let error = read_research_case(&database, BUNDLED_DATASET_ID)
+                .expect_err("invalid snapshot reference should fail");
+            assert!(
+                error.contains(expected_error),
+                "unexpected error for {record_key} {reference_path}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_claim_and_evidence_snapshots_fail_explicitly() {
+        let claim_key = "xenoscope.case.al-taqaddum-2017:claim:aaro-balloon-assessment-v2";
+        let evidence_key = "xenoscope.case.al-taqaddum-2017:evidence:dvids-video-960331";
+        for (record_key, malformed_snapshot) in [
+            (
+                claim_key,
+                serde_json::json!({ "assertionText": "incomplete" }),
+            ),
+            (
+                evidence_key,
+                serde_json::json!({ "description": "incomplete" }),
+            ),
+        ] {
+            let database = Database::in_memory().expect("initialize isolated database");
+            import_bundled_dataset(&database).expect("import v2 fixture");
+            {
+                let connection = database.connection().expect("lock isolated database");
+                connection
+                    .execute(
+                        "UPDATE dataset_record_mappings SET content_snapshot_json = ?1
+                         WHERE dataset_id = ?2 AND record_key = ?3",
+                        params![
+                            malformed_snapshot.to_string(),
+                            BUNDLED_DATASET_ID,
+                            record_key
+                        ],
+                    )
+                    .expect("persist incomplete snapshot");
+            }
+            let error = read_research_case(&database, BUNDLED_DATASET_ID)
+                .expect_err("incomplete snapshot should fail");
+            assert!(error.contains("content snapshot") && error.contains("malformed"));
+        }
+    }
+
+    #[test]
+    fn incomplete_snapshot_author_confidence_fails_explicitly() {
+        let database = Database::in_memory().expect("initialize isolated database");
+        import_bundled_dataset(&database).expect("import v2 fixture");
+        let claim_key = "xenoscope.case.al-taqaddum-2017:claim:aaro-balloon-assessment-v2";
+        mutate_snapshot(&database, claim_key, |snapshot| {
+            snapshot["authorStatedConfidence"] = serde_json::json!({
+                "statedBy": "AARO",
+                "sourceKey": "xenoscope.case.al-taqaddum-2017:source:aaro-report"
+            });
+        });
+
+        let error = read_research_case(&database, BUNDLED_DATASET_ID)
+            .expect_err("incomplete confidence snapshot should fail");
+        assert!(error.contains("claim content snapshot") && error.contains("malformed"));
+    }
+
+    #[test]
     fn malformed_v2_incident_snapshots_and_source_references_fail_explicitly() {
         for mutation in ["malformed_snapshot", "missing_source", "wrong_kind"] {
             let database = Database::in_memory().expect("initialize isolated database");
@@ -1538,9 +1966,17 @@ mod tests {
             .iter()
             .find(|claim| claim.author_stated_confidence.is_some())
             .expect("fixture has author-stated confidence");
+        assert!(case.claims.iter().any(|claim| {
+            claim.author_stated_confidence.is_none() && claim.source.record_kind == "source"
+        }));
         assert_eq!(
             confidence_claim.review.status,
             ClaimReviewStatus::Unreviewed
+        );
+        assert!(
+            case.evidence_items
+                .iter()
+                .all(|evidence| evidence.source.record_kind == "source")
         );
         assert_eq!(
             confidence_claim
@@ -1713,6 +2149,316 @@ mod tests {
                     .iter()
                     .all(|reference| known_ids.contains(reference.record_id.as_str()))
             );
+        }
+    }
+
+    #[test]
+    fn relationship_and_discrepancy_content_comes_from_snapshots_after_live_edits() {
+        let database = Database::in_memory().expect("initialize isolated database");
+        import_bundled_dataset(&database).expect("import v2 fixture");
+        let original = read_research_case(&database, BUNDLED_DATASET_ID)
+            .expect("read original case")
+            .expect("case exists");
+        let relationship = &original.relationships[0];
+        let discrepancy = &original.discrepancies[0];
+        let relationship_id = relationship.record.id.clone();
+        let discrepancy_id = discrepancy.record.id.clone();
+        let expected_relationship_from = "xenoscope.case.al-taqaddum-2017:source:aaro-report";
+        let expected_relationship_to = "xenoscope.case.al-taqaddum-2017:source:dvids-record";
+        let expected_discrepancy_claims = [
+            "xenoscope.case.al-taqaddum-2017:claim:aaro-event-date-v2",
+            "xenoscope.case.al-taqaddum-2017:claim:dvids-date-taken-v2",
+        ];
+        let expected_discrepancy_description = "AARO identifies the event date as 23 October 2017. DVIDS displays the literal Date Taken value 10.01.2017. The notation and meaning of the DVIDS field have not been established here; the difference is unresolved and is not silently interpreted as a confirmed event date.";
+        let alternate_from_id = original.incidents[0].record.id.clone();
+        let alternate_to_id = original.claims[0].record.id.clone();
+        let excluded_claim_ids = discrepancy
+            .claim_references
+            .iter()
+            .map(|reference| reference.record_id.clone())
+            .collect::<HashSet<_>>();
+        let alternate_discrepancy_claim_id = original
+            .claims
+            .iter()
+            .find(|claim| !excluded_claim_ids.contains(&claim.record.id))
+            .expect("fixture has another claim")
+            .record
+            .id
+            .clone();
+
+        {
+            let connection = database.connection().expect("lock isolated database");
+            connection
+                .execute(
+                    "UPDATE relationships
+                     SET relationship_kind = 'corrects',
+                         from_record_id = ?1, from_record_kind = 'incident',
+                         to_record_id = ?2, to_record_kind = 'claim'
+                     WHERE record_id = ?3",
+                    params![alternate_from_id, alternate_to_id, relationship_id],
+                )
+                .expect("edit live relationship content");
+            connection
+                .execute(
+                    "UPDATE discrepancies SET description = 'Edited live description',
+                         status = 'investigating'
+                     WHERE record_id = ?1",
+                    [&discrepancy_id],
+                )
+                .expect("edit live discrepancy description and status");
+            connection
+                .execute(
+                    "DELETE FROM discrepancy_claims WHERE discrepancy_id = ?1",
+                    [&discrepancy_id],
+                )
+                .expect("remove live discrepancy claim links");
+            connection
+                .execute(
+                    "INSERT INTO discrepancy_claims (discrepancy_id, claim_id)
+                     VALUES (?1, ?2)",
+                    params![discrepancy_id, alternate_discrepancy_claim_id],
+                )
+                .expect("add different live discrepancy claim link");
+        }
+
+        let updated = read_research_case(&database, BUNDLED_DATASET_ID)
+            .expect("read case after live edits")
+            .expect("case exists");
+        let updated_relationship = updated
+            .relationships
+            .iter()
+            .find(|item| item.record.id == relationship_id)
+            .expect("relationship remains available");
+        assert_eq!(
+            updated_relationship.relationship_kind,
+            RelationshipKind::Analyses
+        );
+        assert_eq!(
+            updated_relationship.from.dataset_key,
+            expected_relationship_from
+        );
+        assert_eq!(
+            updated_relationship.to.dataset_key,
+            expected_relationship_to
+        );
+        let updated_discrepancy = updated
+            .discrepancies
+            .iter()
+            .find(|item| item.record.id == discrepancy_id)
+            .expect("discrepancy remains available");
+        assert_eq!(
+            updated_discrepancy.description,
+            expected_discrepancy_description
+        );
+        assert_eq!(
+            updated_discrepancy
+                .claim_references
+                .iter()
+                .map(|reference| reference.dataset_key.as_str())
+                .collect::<Vec<_>>(),
+            expected_discrepancy_claims
+        );
+        assert_eq!(updated_discrepancy.status, DiscrepancyStatus::Investigating);
+    }
+
+    #[test]
+    fn relationship_and_discrepancy_snapshots_reject_malformed_or_invalid_references() {
+        let relationship_key =
+            "xenoscope.case.al-taqaddum-2017:relationship:aaro-analyses-dvids-video";
+        let discrepancy_key = "xenoscope.case.al-taqaddum-2017:discrepancy:event-date-v2";
+        let cases = [
+            (relationship_key, "malformed"),
+            (relationship_key, "missing_endpoint"),
+            (relationship_key, "wrong_kind_endpoint"),
+            (relationship_key, "self_reference"),
+            (discrepancy_key, "malformed"),
+            (discrepancy_key, "missing_claim"),
+            (discrepancy_key, "wrong_kind_claim"),
+            (discrepancy_key, "no_claims"),
+            (discrepancy_key, "one_claim"),
+            (discrepancy_key, "duplicate_claim"),
+        ];
+
+        for (record_key, mutation) in cases {
+            let database = Database::in_memory().expect("initialize isolated database");
+            import_bundled_dataset(&database).expect("import v2 fixture");
+            match mutation {
+                "malformed" => {
+                    let connection = database.connection().expect("lock isolated database");
+                    connection
+                        .execute(
+                            "UPDATE dataset_record_mappings SET content_snapshot_json = '{}'
+                             WHERE dataset_id = ?1 AND record_key = ?2",
+                            params![BUNDLED_DATASET_ID, record_key],
+                        )
+                        .expect("persist malformed snapshot");
+                }
+                "missing_endpoint" => {
+                    mutate_snapshot(&database, record_key, |snapshot| {
+                        snapshot["from"]["recordKey"] =
+                            serde_json::json!(format!("{BUNDLED_DATASET_ID}:source:missing"));
+                    });
+                }
+                "wrong_kind_endpoint" => {
+                    mutate_snapshot(&database, record_key, |snapshot| {
+                        snapshot["from"]["recordKind"] = serde_json::json!("source");
+                        snapshot["from"]["recordKey"] = serde_json::json!(
+                            "xenoscope.case.al-taqaddum-2017:claim:aaro-event-date-v2"
+                        );
+                    });
+                }
+                "self_reference" => {
+                    mutate_snapshot(&database, record_key, |snapshot| {
+                        snapshot["to"] = snapshot["from"].clone();
+                    });
+                }
+                "missing_claim" => {
+                    mutate_snapshot(&database, record_key, |snapshot| {
+                        snapshot["claimKeys"][0] =
+                            serde_json::json!(format!("{BUNDLED_DATASET_ID}:claim:missing"));
+                    });
+                }
+                "wrong_kind_claim" => {
+                    mutate_snapshot(&database, record_key, |snapshot| {
+                        snapshot["claimKeys"][0] =
+                            serde_json::json!("xenoscope.case.al-taqaddum-2017:source:aaro-report");
+                    });
+                }
+                "no_claims" => {
+                    mutate_snapshot(&database, record_key, |snapshot| {
+                        snapshot["claimKeys"] = serde_json::json!([]);
+                    });
+                }
+                "one_claim" => {
+                    mutate_snapshot(&database, record_key, |snapshot| {
+                        snapshot["claimKeys"] = serde_json::json!([
+                            "xenoscope.case.al-taqaddum-2017:claim:aaro-event-date-v2"
+                        ]);
+                    });
+                }
+                "duplicate_claim" => {
+                    mutate_snapshot(&database, record_key, |snapshot| {
+                        snapshot["claimKeys"][1] = snapshot["claimKeys"][0].clone();
+                    });
+                }
+                _ => unreachable!(),
+            }
+
+            let error = read_research_case(&database, BUNDLED_DATASET_ID)
+                .expect_err("invalid snapshot or reference should fail");
+            match mutation {
+                "malformed" => {
+                    assert!(
+                        error.contains("content snapshot") && error.contains("malformed"),
+                        "unexpected error: {error}"
+                    );
+                }
+                "missing_endpoint" | "missing_claim" => {
+                    assert!(
+                        error.contains("missing stable key"),
+                        "unexpected error: {error}"
+                    );
+                }
+                "wrong_kind_endpoint" => {
+                    assert!(
+                        error.contains("resolves to claim") && error.contains("expected source"),
+                        "unexpected error: {error}"
+                    );
+                }
+                "self_reference" => {
+                    assert!(
+                        error.contains("same record at both endpoints"),
+                        "unexpected error: {error}"
+                    );
+                }
+                "wrong_kind_claim" => {
+                    assert!(
+                        error.contains("resolves to source") && error.contains("expected claim"),
+                        "unexpected error: {error}"
+                    );
+                }
+                "no_claims" | "one_claim" => {
+                    assert!(
+                        error.contains("at least two claims"),
+                        "unexpected error: {error}"
+                    );
+                }
+                "duplicate_claim" => {
+                    assert!(
+                        error.contains("duplicate claim keys"),
+                        "unexpected error: {error}"
+                    );
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn relationship_and_discrepancy_references_are_limited_to_selected_manifest() {
+        let original_database = Database::in_memory().expect("initialize isolated database");
+        import_bundled_dataset(&original_database).expect("import v2 fixture");
+        let original = read_research_case(&original_database, BUNDLED_DATASET_ID)
+            .expect("read original case")
+            .expect("case exists");
+        assert!(!original.relationships.is_empty());
+        assert!(!original.discrepancies.is_empty());
+
+        let relationship_with_claim_endpoint = original
+            .relationships
+            .iter()
+            .find(|relationship| relationship.to.record_kind == "claim")
+            .expect("fixture has a relationship with a claim endpoint");
+        let exclusions = [
+            (
+                original.discrepancies[0].claim_references[0]
+                    .dataset_key
+                    .clone(),
+                original.discrepancies[0].record.dataset_key.clone(),
+            ),
+            (
+                relationship_with_claim_endpoint.to.dataset_key.clone(),
+                relationship_with_claim_endpoint.record.dataset_key.clone(),
+            ),
+        ];
+
+        for (excluded_key, expected_owner_key) in exclusions {
+            let database = Database::in_memory().expect("initialize isolated database");
+            import_bundled_dataset(&database).expect("import v2 fixture");
+            let mut connection = database.connection().expect("lock isolated database");
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .expect("begin isolated later-manifest transaction");
+            let mut later_manifest =
+                load_manifest(&transaction, BUNDLED_DATASET_ID, original.import_sequence)
+                    .expect("load original manifest");
+            later_manifest.retain(|key| key != &excluded_key);
+            transaction
+                .execute(
+                    "INSERT INTO dataset_imports (
+                        dataset_id, dataset_version, import_sequence, format, format_version,
+                        imported_at, metadata_json, record_keys_json
+                     )
+                     SELECT dataset_id, '2.1.0', import_sequence + 1, format, format_version,
+                            '2026-01-01T00:00:00Z', metadata_json, ?1
+                     FROM dataset_imports
+                     WHERE dataset_id = ?2 AND import_sequence = ?3",
+                    params![
+                        serde_json::to_string(&later_manifest).expect("serialize later manifest"),
+                        BUNDLED_DATASET_ID,
+                        original.import_sequence
+                    ],
+                )
+                .expect("insert later manifest omitting a referenced record");
+            transaction
+                .commit()
+                .expect("commit isolated later-manifest transaction");
+            drop(connection);
+
+            let error = read_research_case(&database, BUNDLED_DATASET_ID)
+                .expect_err("later manifest must not resolve an excluded record");
+            assert!(error.contains(&format!("missing stable key {excluded_key:?}")));
+            assert!(error.contains(&expected_owner_key));
         }
     }
 

@@ -1019,9 +1019,11 @@ mod tests {
                 [],
             )
             .expect("insert dataset identities");
-        insert_dataset_import(&connection, "dataset.one", "v2", "2026-02-01T00:00:00Z");
-        insert_dataset_import(&connection, "dataset.one", "v1", "2026-01-01T00:00:00Z");
+        // These tied versions are deliberately inserted in reverse lexical order. Migration
+        // 0003's version tie-breaker is deterministic, but cannot recover insertion order.
         insert_dataset_import(&connection, "dataset.one", "v3", "2026-02-01T00:00:00Z");
+        insert_dataset_import(&connection, "dataset.one", "v1", "2026-01-01T00:00:00Z");
+        insert_dataset_import(&connection, "dataset.one", "v2", "2026-02-01T00:00:00Z");
         insert_dataset_import(&connection, "dataset.two", "v1", "2026-01-15T00:00:00Z");
 
         initialize(&mut connection).expect("apply migration three");
@@ -1091,6 +1093,16 @@ mod tests {
                 ),
             ]
         );
+        let latest_version: String = connection
+            .query_row(
+                "SELECT dataset_version FROM dataset_imports
+                 WHERE dataset_id = 'dataset.one'
+                 ORDER BY import_sequence DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read deterministic migration fallback latest version");
+        assert_eq!(latest_version, "v3");
         assert_eq!(version, LATEST_SCHEMA_VERSION);
     }
 
