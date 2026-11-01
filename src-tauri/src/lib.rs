@@ -41,6 +41,8 @@ pub fn run() {
             research_dataset_read::get_bundled_research_case,
             research_dataset_read::get_research_case_library,
             research_dataset_read::get_research_case,
+            research_dataset_read::get_research_case_import,
+            research_dataset_read::get_research_dataset_import_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -54,6 +54,14 @@ export interface ResearchDatasetMetadata {
   relationshipNotes: ResearchDatasetRelationshipNote[];
 }
 
+export interface ResearchDatasetImportHistoryEntry {
+  datasetId: string;
+  datasetVersion: string;
+  importSequence: number;
+  importedAt: string;
+  metadata: ResearchDatasetMetadata;
+}
+
 export interface ResearchCaseRecordReference {
   datasetKey: string;
   recordId: string;

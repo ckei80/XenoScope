@@ -1,13 +1,14 @@
 use crate::{
     database::Database,
     research_dataset::{
-        DatasetAuthorStatedConfidence, DatasetLocation, DatasetRecordKind, DatasetRecordReference,
+        ActorKind as DatasetActorKind, DatasetActor, DatasetAuthorStatedConfidence,
+        DatasetFindingReference, DatasetLocation, DatasetRecordKind, DatasetRecordReference,
         DatasetReviewMetadata, DatasetTimePeriod, DiscrepancyStatus, EvidenceKind,
         ReferenceConvention, RelationshipKind, RelationshipNote, SourceAccess, SourceMetadata,
     },
     research_records::{
-        ClaimCategory, RecordActor, ReviewMetadata, SourceKind, SourceLocator,
-        SourceVerificationStatus,
+        ActorKind as RecordActorKind, ClaimCategory, RecordActor, ReviewMetadata, SourceKind,
+        SourceLocator, SourceVerificationStatus,
     },
 };
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
@@ -186,6 +187,16 @@ pub(crate) struct ResearchCaseListEntryDto {
     pub discrepancy_status_counts: ResearchCaseDiscrepancyCountsDto,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ResearchDatasetImportHistoryEntryDto {
+    pub dataset_id: String,
+    pub dataset_version: String,
+    pub import_sequence: i64,
+    pub imported_at: String,
+    pub metadata: ResearchDatasetMetadataDto,
+}
+
 #[derive(Clone, Debug)]
 struct StableRecord {
     dataset_key: String,
@@ -256,6 +267,17 @@ struct DiscrepancyContentSnapshot {
     _status: DiscrepancyStatus,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FindingContentSnapshot {
+    assessment: String,
+    attribution: DatasetActor,
+    claim_references: Vec<DatasetFindingReference>,
+    evidence_references: Vec<DatasetFindingReference>,
+    #[serde(rename = "review")]
+    _review: DatasetReviewMetadata,
+}
+
 impl StableRecord {
     fn reference(&self) -> CaseRecordReferenceDto {
         CaseRecordReferenceDto {
@@ -304,33 +326,84 @@ fn read_research_case(
     database: &Database,
     dataset_id: &str,
 ) -> Result<Option<ImportedResearchCaseDto>, String> {
+    read_research_case_for_import(database, dataset_id, None)
+}
+
+fn read_research_case_at_sequence(
+    database: &Database,
+    dataset_id: &str,
+    import_sequence: i64,
+) -> Result<ImportedResearchCaseDto, String> {
+    if import_sequence <= 0 {
+        return Err(format!(
+            "Import sequence must be positive for dataset {dataset_id:?}"
+        ));
+    }
+    read_research_case_for_import(database, dataset_id, Some(import_sequence))?.ok_or_else(|| {
+        format!("Dataset {dataset_id:?} has no import at sequence {import_sequence}")
+    })
+}
+
+fn read_research_case_for_import(
+    database: &Database,
+    dataset_id: &str,
+    import_sequence: Option<i64>,
+) -> Result<Option<ImportedResearchCaseDto>, String> {
     let mut connection = database.connection()?;
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Deferred)
         .map_err(|error| format!("Could not begin research case read: {error}"))?;
 
-    let ledger: Option<(String, i64, String, i64, String, String)> = transaction
-        .query_row(
-            "SELECT dataset_version, import_sequence, format, format_version,
-                    imported_at, metadata_json
-             FROM dataset_imports
-             WHERE dataset_id = ?1
-             ORDER BY import_sequence DESC
-             LIMIT 1",
-            [dataset_id],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(|error| format!("Could not read bundled research case import history: {error}"))?;
+    let ledger: Option<(String, i64, String, i64, String, String)> = match import_sequence {
+        Some(sequence) => transaction
+            .query_row(
+                "SELECT dataset_version, import_sequence, format, format_version,
+                        imported_at, metadata_json
+                 FROM dataset_imports
+                 WHERE dataset_id = ?1 AND import_sequence = ?2",
+                params![dataset_id, sequence],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| {
+                format!(
+                    "Could not read import sequence {sequence} for dataset {dataset_id:?}: {error}"
+                )
+            })?,
+        None => transaction
+            .query_row(
+                "SELECT dataset_version, import_sequence, format, format_version,
+                        imported_at, metadata_json
+                 FROM dataset_imports
+                 WHERE dataset_id = ?1
+                 ORDER BY import_sequence DESC
+                 LIMIT 1",
+                [dataset_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| {
+                format!("Could not read bundled research case import history: {error}")
+            })?,
+    };
 
     let Some((
         dataset_version,
@@ -424,6 +497,82 @@ pub(crate) fn get_research_case(
     dataset_id: String,
 ) -> Result<Option<ImportedResearchCaseDto>, String> {
     read_persisted_research_case(&database, &dataset_id).map(Some)
+}
+
+#[tauri::command]
+pub(crate) fn get_research_case_import(
+    database: State<'_, Database>,
+    dataset_id: String,
+    import_sequence: i64,
+) -> Result<ImportedResearchCaseDto, String> {
+    read_research_case_at_sequence(&database, &dataset_id, import_sequence)
+}
+
+#[tauri::command]
+pub(crate) fn get_research_dataset_import_history(
+    database: State<'_, Database>,
+    dataset_id: String,
+) -> Result<Vec<ResearchDatasetImportHistoryEntryDto>, String> {
+    read_research_dataset_import_history(&database, &dataset_id)
+}
+
+fn read_research_dataset_import_history(
+    database: &Database,
+    dataset_id: &str,
+) -> Result<Vec<ResearchDatasetImportHistoryEntryDto>, String> {
+    if dataset_id.trim().is_empty() {
+        return Err("Dataset ID must not be blank".to_string());
+    }
+
+    let mut connection = database.connection()?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Deferred)
+        .map_err(|error| format!("Could not begin dataset import history read: {error}"))?;
+
+    let mut statement = transaction
+        .prepare(
+            "SELECT dataset_version, import_sequence, imported_at, metadata_json
+             FROM dataset_imports
+             WHERE dataset_id = ?1
+             ORDER BY import_sequence ASC",
+        )
+        .map_err(|error| format!("Could not prepare dataset import history query: {error}"))?;
+    let imports = statement
+        .query_map([dataset_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|error| format!("Could not query dataset import history: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read dataset import history rows: {error}"))?;
+    drop(statement);
+
+    let mut history = Vec::with_capacity(imports.len());
+    for (dataset_version, import_sequence, imported_at, metadata_json) in imports {
+        let metadata: ResearchDatasetMetadataDto =
+            serde_json::from_str(&metadata_json).map_err(|error| {
+                format!(
+                    "Stored metadata for dataset {dataset_id:?} version {dataset_version:?} \
+                     import sequence {import_sequence} is malformed: {error}"
+                )
+            })?;
+        history.push(ResearchDatasetImportHistoryEntryDto {
+            dataset_id: dataset_id.to_string(),
+            dataset_version,
+            import_sequence,
+            imported_at,
+            metadata,
+        });
+    }
+
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not finish dataset import history read: {error}"))?;
+    Ok(history)
 }
 
 fn read_persisted_research_case(
@@ -1056,46 +1205,38 @@ fn load_findings(
     let mut result = Vec::new();
     for key in keys_of_kind(manifest, mappings, "finding") {
         let record = require_record(&key, "finding", mappings)?;
-        let row: Option<(
-            String,
-            String,
-            Option<String>,
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        )> = transaction
+        let snapshot: FindingContentSnapshot = serde_json::from_str(&record.content_snapshot_json)
+            .map_err(|error| {
+                format!("Stored finding content snapshot for {key:?} is malformed: {error}")
+            })?;
+        if snapshot.assessment.trim().is_empty() {
+            return Err(format!(
+                "Stored finding content snapshot for {key:?} has a blank assessment"
+            ));
+        }
+        if snapshot.claim_references.is_empty() && snapshot.evidence_references.is_empty() {
+            return Err(format!(
+                "Stored finding content snapshot for {key:?} has no claim or evidence references"
+            ));
+        }
+        let row: Option<(String, Option<String>, Option<String>, Option<String>)> = transaction
             .query_row(
-                "SELECT assessment, attribution_kind, attribution_name, review_status,
-                        reviewed_at, reviewed_by_kind, reviewed_by_name
+                "SELECT review_status, reviewed_at, reviewed_by_kind, reviewed_by_name
                  FROM findings WHERE record_id = ?1 AND record_kind = 'finding'",
                 [&record.record_id],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
-                    ))
-                },
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()
             .map_err(|error| format!("Could not read finding {key:?}: {error}"))?;
-        let (
-            assessment,
-            attribution_kind,
-            attribution_name,
-            review_status,
-            reviewed_at,
-            reviewer_kind,
-            reviewer_name,
-        ) = row.ok_or_else(|| format!("Missing finding domain data for stable key {key:?}"))?;
+        let (review_status, reviewed_at, reviewer_kind, reviewer_name) =
+            row.ok_or_else(|| format!("Missing finding domain data for stable key {key:?}"))?;
         let attribution = RecordActor {
-            kind: parse_enum(&attribution_kind, &format!("{key}.attribution.kind"))?,
-            display_name: attribution_name,
+            kind: match snapshot.attribution.kind {
+                DatasetActorKind::Researcher => RecordActorKind::Researcher,
+                DatasetActorKind::System => RecordActorKind::System,
+                DatasetActorKind::Ai => RecordActorKind::Ai,
+            },
+            display_name: snapshot.attribution.display_name,
         };
         let review = ReviewMetadata {
             status: parse_enum(&review_status, &format!("{key}.review.status"))?,
@@ -1109,25 +1250,23 @@ fn load_findings(
                 })
                 .transpose()?,
         };
-        let claim_references = load_finding_references(
-            transaction,
+        let claim_references = resolve_finding_references(
+            &snapshot.claim_references,
+            "claim",
             &key,
-            &record.record_id,
-            "finding_claim_references",
-            "claim_id",
+            "claimReferences",
             mappings,
         )?;
-        let evidence_references = load_finding_references(
-            transaction,
+        let evidence_references = resolve_finding_references(
+            &snapshot.evidence_references,
+            "evidence_item",
             &key,
-            &record.record_id,
-            "finding_evidence_references",
-            "evidence_item_id",
+            "evidenceReferences",
             mappings,
         )?;
         result.push(ResearchFindingDto {
             record: record.metadata(transaction)?,
-            assessment,
+            assessment: snapshot.assessment,
             attribution,
             claim_references,
             evidence_references,
@@ -1137,61 +1276,30 @@ fn load_findings(
     Ok(result)
 }
 
-fn load_finding_references(
-    transaction: &Transaction<'_>,
+fn resolve_finding_references(
+    references: &[DatasetFindingReference],
+    expected_kind: &str,
     finding_key: &str,
-    finding_id: &str,
-    table: &str,
-    reference_column: &str,
+    field: &str,
     mappings: &HashMap<String, StableRecord>,
 ) -> Result<Vec<CaseFindingReferenceDto>, String> {
-    let mut statement = transaction
-        .prepare(&format!(
-            "SELECT {reference_column}, reference_role
-             FROM {table}
-             WHERE finding_id = ?1
-             ORDER BY {reference_column}, reference_role"
-        ))
-        .map_err(|error| format!("Could not prepare {table} read: {error}"))?;
-    let rows = statement
-        .query_map([finding_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|error| format!("Could not query {table} for {finding_key:?}: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Could not read {table} for {finding_key:?}: {error}"))?;
-    rows.into_iter()
-        .map(|(record_id, role)| {
-            let expected_kind = if reference_column == "claim_id" {
-                "claim"
-            } else {
-                "evidence_item"
-            };
-            let reference = reference_by_id(&record_id, expected_kind, mappings)?;
+    references
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let reference = resolve_snapshot_reference(
+                &item.record_key,
+                expected_kind,
+                finding_key,
+                &format!("{field}[{index}].recordKey"),
+                mappings,
+            )?;
             Ok(CaseFindingReferenceDto {
                 record: reference,
-                role: parse_enum(&role, &format!("{finding_key}.{table}.role"))?,
+                role: item.role.clone(),
             })
         })
         .collect()
-}
-
-fn reference_by_id(
-    id: &str,
-    expected_kind: &str,
-    mappings: &HashMap<String, StableRecord>,
-) -> Result<CaseRecordReferenceDto, String> {
-    let record = mappings
-        .values()
-        .find(|record| record.record_id == id)
-        .ok_or_else(|| format!("Stored reference points to unmapped record ID {id:?}"))?;
-    if record.record_kind != expected_kind {
-        return Err(format!(
-            "Stored reference ID {id:?} has kind {}, expected {expected_kind}",
-            record.record_kind
-        ));
-    }
-    Ok(record.reference())
 }
 
 fn validate_metadata_references(
@@ -1329,6 +1437,116 @@ mod tests {
         transaction.commit().expect("commit changed snapshot");
     }
 
+    fn finding_snapshot(claim_key: &str, evidence_key: &str) -> serde_json::Value {
+        serde_json::json!({
+            "assessment": "Snapshot finding content",
+            "attribution": {
+                "kind": "ai",
+                "displayName": "Snapshot attribution"
+            },
+            "claimReferences": [{
+                "recordKey": claim_key,
+                "role": "supporting"
+            }],
+            "evidenceReferences": [{
+                "recordKey": evidence_key,
+                "role": "conflicting"
+            }],
+            "review": {
+                "status": "unreviewed",
+                "reviewedAt": null,
+                "reviewedBy": null
+            }
+        })
+    }
+
+    fn add_test_finding(
+        database: &Database,
+        finding_key: &str,
+        snapshot: &serde_json::Value,
+    ) -> (String, String, String, String) {
+        let mut connection = database.connection().expect("lock isolated database");
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("begin test-only finding transaction");
+        let find_id = |record_key: &str| {
+            transaction
+                .query_row(
+                    "SELECT record_id FROM dataset_record_mappings
+                     WHERE dataset_id = ?1 AND record_key = ?2",
+                    params![BUNDLED_DATASET_ID, record_key],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("find mapped record")
+        };
+        let claim_key = snapshot["claimReferences"][0]["recordKey"]
+            .as_str()
+            .expect("snapshot claim key");
+        let evidence_key = snapshot["evidenceReferences"][0]["recordKey"]
+            .as_str()
+            .expect("snapshot evidence key");
+        let claim_id = find_id(claim_key);
+        let evidence_id = find_id(evidence_key);
+        let finding_id = Uuid::new_v4().to_string();
+        transaction
+            .execute(
+                "INSERT INTO records (record_id, record_kind, created_at, created_by_kind)
+                 VALUES (?1, 'finding', '2025-01-01T00:00:00Z', 'system')",
+                [&finding_id],
+            )
+            .expect("insert test-only finding identity");
+        transaction
+            .execute(
+                "INSERT INTO findings (record_id, assessment, attribution_kind, attribution_name,
+                    review_status)
+                 VALUES (?1, 'Live finding content', 'system', 'Live attribution', 'unreviewed')",
+                [&finding_id],
+            )
+            .expect("insert test-only finding");
+        transaction
+            .execute(
+                "INSERT INTO finding_claim_references (finding_id, claim_id, reference_role)
+                 VALUES (?1, ?2, 'supporting')",
+                params![finding_id, claim_id],
+            )
+            .expect("link test-only finding to imported claim");
+        transaction
+            .execute(
+                "INSERT INTO finding_evidence_references
+                    (finding_id, evidence_item_id, reference_role)
+                 VALUES (?1, ?2, 'conflicting')",
+                params![finding_id, evidence_id],
+            )
+            .expect("link test-only finding to imported evidence");
+        transaction
+            .execute(
+                "INSERT INTO dataset_record_mappings
+                    (dataset_id, record_key, record_kind, record_id, content_snapshot_json)
+                 VALUES (?1, ?2, 'finding', ?3, ?4)",
+                params![
+                    BUNDLED_DATASET_ID,
+                    finding_key,
+                    finding_id,
+                    snapshot.to_string()
+                ],
+            )
+            .expect("map test-only finding");
+        let mut manifest =
+            load_manifest(&transaction, BUNDLED_DATASET_ID, 1).expect("load actual manifest");
+        manifest.push(finding_key.to_string());
+        manifest.sort_unstable();
+        let manifest_json = serde_json::to_string(&manifest).expect("serialize test manifest");
+        transaction
+            .execute(
+                "UPDATE dataset_imports SET record_keys_json = ?1
+                 WHERE dataset_id = ?2 AND import_sequence = 1",
+                params![manifest_json, BUNDLED_DATASET_ID],
+            )
+            .expect("update isolated test manifest");
+        transaction.commit().expect("commit test-only finding");
+        (finding_id, claim_id, evidence_id, finding_key.to_string())
+    }
+
     #[test]
     fn no_imported_bundled_dataset_returns_none() {
         let database = Database::in_memory().expect("initialize isolated database");
@@ -1451,6 +1669,72 @@ mod tests {
             current_case.evidence_items[0].record.dataset_key,
             "xenoscope.case.al-taqaddum-2017:evidence:dvids-video-960331"
         );
+    }
+
+    #[test]
+    fn reads_requested_historical_import_without_changing_latest_selection() {
+        let database = Database::in_memory().expect("initialize isolated database");
+        seed_bundled_legacy_dataset_for_tests(&database).expect("seed historical v1 dataset");
+
+        let original = read_research_case_at_sequence(&database, BUNDLED_DATASET_ID, 1)
+            .expect("read exact v1 import");
+        assert_eq!(original.dataset_version, "1.0.0");
+        assert_eq!(original.import_sequence, 1);
+        assert_eq!(
+            original.incidents[0].record.dataset_key,
+            "xenoscope.case.al-taqaddum-2017:incident:al-taqaddum-object-report"
+        );
+        assert!(
+            original
+                .claims
+                .iter()
+                .any(|claim| claim.assertion_text == "Date: 23 October 2017")
+        );
+
+        let upgrade = import_bundled_dataset(&database).expect("import v2 bundle");
+        assert_eq!(upgrade.import_sequence, 2);
+
+        let historical = read_research_case_at_sequence(&database, BUNDLED_DATASET_ID, 1)
+            .expect("read v1 import after v2 import");
+        assert_eq!(historical, original);
+
+        let latest = read_research_case(&database, BUNDLED_DATASET_ID)
+            .expect("read latest import")
+            .expect("latest import exists");
+        assert_eq!(latest.dataset_version, "2.0.0");
+        assert_eq!(latest.import_sequence, 2);
+        assert_ne!(
+            historical.incidents[0].record.dataset_key,
+            latest.incidents[0].record.dataset_key
+        );
+
+        let shared_key = "xenoscope.case.al-taqaddum-2017:source:aaro-report";
+        let historical_source = historical
+            .sources
+            .iter()
+            .find(|source| source.record.dataset_key == shared_key)
+            .expect("shared source is in historical manifest");
+        let latest_source = latest
+            .sources
+            .iter()
+            .find(|source| source.record.dataset_key == shared_key)
+            .expect("shared source is in latest manifest");
+        assert_eq!(historical_source.record.id, latest_source.record.id);
+        assert_eq!(historical_source.title, latest_source.title);
+
+        let invalid_sequence = read_research_case_at_sequence(&database, BUNDLED_DATASET_ID, 3)
+            .expect_err("unknown sequence must fail");
+        assert!(invalid_sequence.contains("no import at sequence 3"));
+
+        let other_dataset = "xenoscope.test.other-history";
+        clone_bundled_dataset(&database, other_dataset);
+        let wrong_dataset_sequence = read_research_case_at_sequence(&database, other_dataset, 2)
+            .expect_err("sequence belonging only to another dataset must fail");
+        assert!(wrong_dataset_sequence.contains("no import at sequence 2"));
+        let invalid_nonpositive_sequence =
+            read_research_case_at_sequence(&database, BUNDLED_DATASET_ID, 0)
+                .expect_err("non-positive sequence must fail");
+        assert!(invalid_nonpositive_sequence.contains("must be positive"));
     }
 
     #[test]
@@ -1802,7 +2086,7 @@ mod tests {
                 field => snapshot[field] = serde_json::json!(reference),
             });
 
-            let error = read_research_case(&database, BUNDLED_DATASET_ID)
+            let error = read_research_case_at_sequence(&database, BUNDLED_DATASET_ID, 1)
                 .expect_err("invalid snapshot reference should fail");
             assert!(
                 error.contains(expected_error),
@@ -2021,64 +2305,32 @@ mod tests {
     fn reads_test_only_finding_and_its_linked_claim() {
         let database = Database::in_memory().expect("initialize isolated database");
         seed_bundled_legacy_dataset_for_tests(&database).expect("seed legacy fixture");
-        let finding_id = Uuid::new_v4().to_string();
-        let finding_key = format!("{BUNDLED_DATASET_ID}:finding:test-only");
-        let mut connection = database.connection().expect("lock isolated database");
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .expect("begin test-only finding transaction");
-        let claim_id: String = transaction
+        let connection = database.connection().expect("lock isolated database");
+        let claim_key: String = connection
             .query_row(
-                "SELECT record_id FROM dataset_record_mappings
+                "SELECT record_key FROM dataset_record_mappings
                  WHERE dataset_id = ?1 AND record_kind = 'claim'
                  ORDER BY record_key LIMIT 1",
                 [BUNDLED_DATASET_ID],
                 |row| row.get(0),
             )
-            .expect("select a real imported claim");
-        transaction
-            .execute(
-                "INSERT INTO records (record_id, record_kind, created_at, created_by_kind)
-                 VALUES (?1, 'finding', '2025-01-01T00:00:00Z', 'system')",
-                [&finding_id],
+            .expect("select a real imported claim key");
+        let evidence_key: String = connection
+            .query_row(
+                "SELECT record_key FROM dataset_record_mappings
+                 WHERE dataset_id = ?1 AND record_kind = 'evidence_item'
+                 ORDER BY record_key LIMIT 1",
+                [BUNDLED_DATASET_ID],
+                |row| row.get(0),
             )
-            .expect("insert test-only finding identity");
-        transaction
-            .execute(
-                "INSERT INTO findings (record_id, assessment, attribution_kind, review_status)
-                 VALUES (?1, 'Test-only assessment', 'system', 'unreviewed')",
-                [&finding_id],
-            )
-            .expect("insert test-only finding");
-        transaction
-            .execute(
-                "INSERT INTO finding_claim_references (finding_id, claim_id, reference_role)
-                 VALUES (?1, ?2, 'supporting')",
-                params![finding_id, claim_id],
-            )
-            .expect("link test-only finding to imported claim");
-        transaction
-            .execute(
-                "INSERT INTO dataset_record_mappings
-                    (dataset_id, record_key, record_kind, record_id, content_snapshot_json)
-                 VALUES (?1, ?2, 'finding', ?3, '{}')",
-                params![BUNDLED_DATASET_ID, finding_key, finding_id],
-            )
-            .expect("map test-only finding");
-        let mut manifest =
-            load_manifest(&transaction, BUNDLED_DATASET_ID, 1).expect("load actual manifest");
-        manifest.push(finding_key);
-        manifest.sort_unstable();
-        let manifest_json = serde_json::to_string(&manifest).expect("serialize test manifest");
-        transaction
-            .execute(
-                "UPDATE dataset_imports SET record_keys_json = ?1
-                 WHERE dataset_id = ?2 AND import_sequence = 1",
-                params![manifest_json, BUNDLED_DATASET_ID],
-            )
-            .expect("update isolated test manifest");
-        transaction.commit().expect("commit test-only finding");
+            .expect("select a real imported evidence key");
         drop(connection);
+        let snapshot = finding_snapshot(&claim_key, &evidence_key);
+        let (finding_id, claim_id, evidence_id, finding_key) = add_test_finding(
+            &database,
+            &format!("{BUNDLED_DATASET_ID}:finding:test-only"),
+            &snapshot,
+        );
 
         let case = read_research_case(&database, BUNDLED_DATASET_ID)
             .expect("read test finding")
@@ -2086,13 +2338,358 @@ mod tests {
         assert_eq!(case.findings.len(), 1);
         let finding = &case.findings[0];
         assert_eq!(finding.record.id, finding_id);
-        assert_eq!(finding.assessment, "Test-only assessment");
+        assert_eq!(finding.record.dataset_key, finding_key);
+        assert_eq!(finding.assessment, "Snapshot finding content");
+        assert_eq!(
+            finding.attribution.kind,
+            crate::research_records::ActorKind::Ai
+        );
+        assert_eq!(
+            finding.attribution.display_name.as_deref(),
+            Some("Snapshot attribution")
+        );
         assert_eq!(finding.claim_references.len(), 1);
+        assert_eq!(finding.claim_references[0].record.dataset_key, claim_key);
         assert_eq!(finding.claim_references[0].record.record_id, claim_id);
         assert_eq!(
             finding.claim_references[0].role,
             crate::research_dataset::FindingReferenceRole::Supporting
         );
+        assert_eq!(finding.evidence_references.len(), 1);
+        assert_eq!(
+            finding.evidence_references[0].record.dataset_key,
+            evidence_key
+        );
+        assert_eq!(finding.evidence_references[0].record.record_id, evidence_id);
+        assert_eq!(
+            finding.evidence_references[0].role,
+            crate::research_dataset::FindingReferenceRole::Conflicting
+        );
+        assert_eq!(
+            finding.review.status,
+            crate::research_records::ClaimReviewStatus::Unreviewed
+        );
+    }
+
+    #[test]
+    fn finding_content_and_references_come_from_snapshot_while_review_remains_live() {
+        let database = Database::in_memory().expect("initialize isolated database");
+        seed_bundled_legacy_dataset_for_tests(&database).expect("seed legacy fixture");
+        let connection = database.connection().expect("lock isolated database");
+        let claim_keys = {
+            let mut statement = connection
+                .prepare(
+                    "SELECT record_key, record_id FROM dataset_record_mappings
+                     WHERE dataset_id = ?1 AND record_kind = 'claim'
+                     ORDER BY record_key",
+                )
+                .expect("prepare claim key read");
+            statement
+                .query_map([BUNDLED_DATASET_ID], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .expect("query claim keys")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("read claim keys")
+        };
+        let evidence_key: String = connection
+            .query_row(
+                "SELECT record_key FROM dataset_record_mappings
+                 WHERE dataset_id = ?1 AND record_kind = 'evidence_item'
+                 ORDER BY record_key LIMIT 1",
+                [BUNDLED_DATASET_ID],
+                |row| row.get(0),
+            )
+            .expect("select a real imported evidence key");
+        drop(connection);
+        let snapshot = finding_snapshot(&claim_keys[0].0, &evidence_key);
+        let (finding_id, claim_id, evidence_id, finding_key) = add_test_finding(
+            &database,
+            &format!("{BUNDLED_DATASET_ID}:finding:snapshot-integrity"),
+            &snapshot,
+        );
+        let alternate_claim = &claim_keys[1];
+
+        {
+            let connection = database.connection().expect("lock isolated database");
+            connection
+                .execute(
+                    "UPDATE findings
+                     SET assessment = 'Edited live assessment',
+                         attribution_kind = 'researcher',
+                         attribution_name = 'Edited live attribution',
+                         review_status = 'in_review',
+                         reviewed_at = '2026-11-01T00:00:00Z',
+                         reviewed_by_kind = 'researcher',
+                         reviewed_by_name = 'Review Owner'
+                     WHERE record_id = ?1",
+                    [&finding_id],
+                )
+                .expect("edit live finding content and review state");
+            connection
+                .execute(
+                    "DELETE FROM finding_claim_references WHERE finding_id = ?1",
+                    [&finding_id],
+                )
+                .expect("remove original live claim link");
+            connection
+                .execute(
+                    "INSERT INTO finding_claim_references (finding_id, claim_id, reference_role)
+                     VALUES (?1, ?2, 'conflicting')",
+                    params![finding_id, alternate_claim.1],
+                )
+                .expect("insert changed live claim link");
+            connection
+                .execute(
+                    "UPDATE finding_evidence_references SET reference_role = 'supporting'
+                     WHERE finding_id = ?1 AND evidence_item_id = ?2",
+                    params![finding_id, evidence_id],
+                )
+                .expect("change live evidence reference role");
+        }
+
+        let case = read_research_case(&database, BUNDLED_DATASET_ID)
+            .expect("read finding after live edits")
+            .expect("case exists");
+        let finding = case
+            .findings
+            .iter()
+            .find(|finding| finding.record.dataset_key == finding_key)
+            .expect("finding remains available");
+        assert_eq!(finding.record.id, finding_id);
+        assert_eq!(finding.assessment, "Snapshot finding content");
+        assert_eq!(
+            finding.attribution.kind,
+            crate::research_records::ActorKind::Ai
+        );
+        assert_eq!(
+            finding.attribution.display_name.as_deref(),
+            Some("Snapshot attribution")
+        );
+        assert_eq!(finding.claim_references.len(), 1);
+        assert_eq!(
+            finding.claim_references[0].record.dataset_key,
+            claim_keys[0].0
+        );
+        assert_eq!(finding.claim_references[0].record.record_id, claim_id);
+        assert_eq!(
+            finding.claim_references[0].role,
+            crate::research_dataset::FindingReferenceRole::Supporting
+        );
+        assert_eq!(finding.evidence_references.len(), 1);
+        assert_eq!(
+            finding.evidence_references[0].record.dataset_key,
+            evidence_key
+        );
+        assert_eq!(finding.evidence_references[0].record.record_id, evidence_id);
+        assert_eq!(
+            finding.evidence_references[0].role,
+            crate::research_dataset::FindingReferenceRole::Conflicting
+        );
+        assert_eq!(
+            finding.review.status,
+            crate::research_records::ClaimReviewStatus::InReview
+        );
+        assert_eq!(
+            finding.review.reviewed_at.as_deref(),
+            Some("2026-11-01T00:00:00Z")
+        );
+        assert_eq!(
+            finding
+                .review
+                .reviewed_by
+                .as_ref()
+                .and_then(|actor| actor.display_name.as_deref()),
+            Some("Review Owner")
+        );
+    }
+
+    #[test]
+    fn finding_snapshots_reject_malformed_incomplete_and_invalid_references() {
+        let database = Database::in_memory().expect("initialize isolated database");
+        seed_bundled_legacy_dataset_for_tests(&database).expect("seed legacy fixture");
+        let connection = database.connection().expect("lock isolated database");
+        let claim_key: String = connection
+            .query_row(
+                "SELECT record_key FROM dataset_record_mappings
+                 WHERE dataset_id = ?1 AND record_kind = 'claim' ORDER BY record_key LIMIT 1",
+                [BUNDLED_DATASET_ID],
+                |row| row.get(0),
+            )
+            .expect("select a real imported claim key");
+        let source_key: String = connection
+            .query_row(
+                "SELECT record_key FROM dataset_record_mappings
+                 WHERE dataset_id = ?1 AND record_kind = 'source' ORDER BY record_key LIMIT 1",
+                [BUNDLED_DATASET_ID],
+                |row| row.get(0),
+            )
+            .expect("select a real imported source key");
+        let evidence_key: String = connection
+            .query_row(
+                "SELECT record_key FROM dataset_record_mappings
+                 WHERE dataset_id = ?1 AND record_kind = 'evidence_item' ORDER BY record_key LIMIT 1",
+                [BUNDLED_DATASET_ID],
+                |row| row.get(0),
+            )
+            .expect("select a real imported evidence key");
+        drop(connection);
+
+        let cases = [
+            "malformed",
+            "incomplete",
+            "incompatible",
+            "empty_assessment",
+            "no_references",
+            "missing_claim",
+            "wrong_kind_claim",
+            "missing_evidence",
+            "wrong_kind_evidence",
+        ];
+        for mutation in cases {
+            let database = Database::in_memory().expect("initialize isolated database");
+            seed_bundled_legacy_dataset_for_tests(&database).expect("seed legacy fixture");
+            let snapshot = finding_snapshot(&claim_key, &evidence_key);
+            add_test_finding(
+                &database,
+                &format!("{BUNDLED_DATASET_ID}:finding:invalid-snapshot"),
+                &snapshot,
+            );
+            mutate_snapshot(
+                &database,
+                &format!("{BUNDLED_DATASET_ID}:finding:invalid-snapshot"),
+                |snapshot| match mutation {
+                    "malformed" => *snapshot = serde_json::json!({}),
+                    "incomplete" => {
+                        snapshot.as_object_mut().unwrap().remove("attribution");
+                    }
+                    "incompatible" => {
+                        snapshot["unexpectedField"] = serde_json::json!("incompatible");
+                    }
+                    "empty_assessment" => {
+                        snapshot["assessment"] = serde_json::json!("  ");
+                    }
+                    "no_references" => {
+                        snapshot["claimReferences"] = serde_json::json!([]);
+                        snapshot["evidenceReferences"] = serde_json::json!([]);
+                    }
+                    "missing_claim" => {
+                        snapshot["claimReferences"][0]["recordKey"] =
+                            serde_json::json!(format!("{BUNDLED_DATASET_ID}:claim:missing"));
+                    }
+                    "wrong_kind_claim" => {
+                        snapshot["claimReferences"][0]["recordKey"] = serde_json::json!(source_key);
+                    }
+                    "missing_evidence" => {
+                        snapshot["evidenceReferences"][0]["recordKey"] =
+                            serde_json::json!(format!("{BUNDLED_DATASET_ID}:evidence:missing"));
+                    }
+                    "wrong_kind_evidence" => {
+                        snapshot["evidenceReferences"][0]["recordKey"] =
+                            serde_json::json!(claim_key);
+                    }
+                    _ => unreachable!(),
+                },
+            );
+
+            let error = read_research_case(&database, BUNDLED_DATASET_ID)
+                .expect_err("invalid finding snapshot/reference should fail");
+            match mutation {
+                "missing_claim" | "missing_evidence" => {
+                    assert!(
+                        error.contains("missing stable key"),
+                        "unexpected error: {error}"
+                    );
+                }
+                "wrong_kind_claim" => {
+                    assert!(
+                        error.contains("resolves to source") && error.contains("expected claim"),
+                        "unexpected error: {error}"
+                    );
+                }
+                "wrong_kind_evidence" => {
+                    assert!(
+                        error.contains("resolves to claim")
+                            && error.contains("expected evidence_item"),
+                        "unexpected error: {error}"
+                    );
+                }
+                "empty_assessment" => {
+                    assert!(
+                        error.contains("blank assessment"),
+                        "unexpected error: {error}"
+                    );
+                }
+                "no_references" => {
+                    assert!(
+                        error.contains("no claim or evidence references"),
+                        "unexpected error: {error}"
+                    );
+                }
+                _ => assert!(
+                    error.contains("finding content snapshot") && error.contains("malformed"),
+                    "unexpected error: {error}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn finding_snapshot_references_must_be_in_the_selected_manifest() {
+        let database = Database::in_memory().expect("initialize isolated database");
+        seed_bundled_legacy_dataset_for_tests(&database).expect("seed legacy fixture");
+        let connection = database.connection().expect("lock isolated database");
+        let claim_key: String = connection
+            .query_row(
+                "SELECT record_key FROM dataset_record_mappings
+                 WHERE dataset_id = ?1 AND record_kind = 'claim' ORDER BY record_key LIMIT 1",
+                [BUNDLED_DATASET_ID],
+                |row| row.get(0),
+            )
+            .expect("select a real imported claim key");
+        let evidence_key: String = connection
+            .query_row(
+                "SELECT record_key FROM dataset_record_mappings
+                 WHERE dataset_id = ?1 AND record_kind = 'evidence_item' ORDER BY record_key LIMIT 1",
+                [BUNDLED_DATASET_ID],
+                |row| row.get(0),
+            )
+            .expect("select a real imported evidence key");
+        drop(connection);
+        let snapshot = finding_snapshot(&claim_key, &evidence_key);
+        let finding_key = format!("{BUNDLED_DATASET_ID}:finding:out-of-manifest");
+        add_test_finding(&database, &finding_key, &snapshot);
+        let outside_key = format!("{BUNDLED_DATASET_ID}:claim:outside-manifest");
+        let outside_id = Uuid::new_v4().to_string();
+        {
+            let connection = database.connection().expect("lock isolated database");
+            connection
+                .execute(
+                    "INSERT INTO records (record_id, record_kind, created_at, created_by_kind)
+                     VALUES (?1, 'claim', '2026-01-01T00:00:00Z', 'system')",
+                    [&outside_id],
+                )
+                .expect("insert mapped claim identity outside the manifest");
+            connection
+                .execute(
+                    "INSERT INTO dataset_record_mappings
+                        (dataset_id, record_key, record_kind, record_id, content_snapshot_json)
+                     VALUES (?1, ?2, 'claim', ?3, '{}')",
+                    params![BUNDLED_DATASET_ID, outside_key, outside_id],
+                )
+                .expect("map claim outside selected manifest");
+        }
+        mutate_snapshot(&database, &finding_key, |snapshot| {
+            snapshot["claimReferences"][0]["recordKey"] = serde_json::json!(outside_key);
+        });
+
+        let error = read_research_case(&database, BUNDLED_DATASET_ID)
+            .expect_err("snapshot reference outside selected manifest should fail");
+        assert!(
+            error.contains("missing stable key"),
+            "unexpected error: {error}"
+        );
+        assert!(error.contains(&outside_key), "unexpected error: {error}");
     }
 
     #[test]
@@ -2455,7 +3052,7 @@ mod tests {
                 .expect("commit isolated later-manifest transaction");
             drop(connection);
 
-            let error = read_research_case(&database, BUNDLED_DATASET_ID)
+            let error = read_research_case_at_sequence(&database, BUNDLED_DATASET_ID, 2)
                 .expect_err("later manifest must not resolve an excluded record");
             assert!(error.contains(&format!("missing stable key {excluded_key:?}")));
             assert!(error.contains(&expected_owner_key));
@@ -2725,6 +3322,125 @@ mod tests {
             read_persisted_research_case(&database, "not-persisted")
                 .expect_err("unknown dataset identity should be rejected"),
             "Dataset \"not-persisted\" has no persisted imports"
+        );
+    }
+
+    #[test]
+    fn import_history_is_ordered_by_sequence_and_returns_ledger_metadata() {
+        let database = Database::in_memory().expect("initialize isolated database");
+        seed_bundled_legacy_dataset_for_tests(&database).expect("seed legacy fixture");
+        let dataset_id = "xenoscope.case.test-import-history";
+        clone_bundled_dataset(&database, dataset_id);
+
+        let first_imported_at = {
+            let connection = database.connection().expect("lock isolated database");
+            let transaction = connection
+                .unchecked_transaction()
+                .expect("begin test import history transaction");
+            let (mut second_metadata, manifest, first_imported_at): (
+                serde_json::Value,
+                String,
+                String,
+            ) = transaction
+                .query_row(
+                    "SELECT metadata_json, record_keys_json, imported_at FROM dataset_imports
+                     WHERE dataset_id = ?1 AND import_sequence = 1",
+                    [dataset_id],
+                    |row| {
+                        let metadata_json: String = row.get(0)?;
+                        let metadata = serde_json::from_str(&metadata_json).map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                metadata_json.len(),
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })?;
+                        Ok((metadata, row.get(1)?, row.get(2)?))
+                    },
+                )
+                .expect("read base ledger metadata and manifest");
+            let mut third_metadata = second_metadata.clone();
+            second_metadata["referenceConvention"]["references"] =
+                serde_json::json!("sequence two references");
+            third_metadata["referenceConvention"]["references"] =
+                serde_json::json!("sequence three references");
+
+            for (version, sequence, imported_at, metadata) in [
+                ("z-version", 2_i64, "2099-12-31T23:59:59Z", second_metadata),
+                ("a-version", 3_i64, "1900-01-01T00:00:00Z", third_metadata),
+            ] {
+                transaction
+                    .execute(
+                        "INSERT INTO dataset_imports (
+                            dataset_id, dataset_version, import_sequence, format,
+                            format_version, imported_at, metadata_json, record_keys_json
+                         ) VALUES (
+                            ?1, ?2, ?3, 'xenoscope-research-dataset', 1, ?4, ?5, ?6
+                         )",
+                        params![
+                            dataset_id,
+                            version,
+                            sequence,
+                            imported_at,
+                            metadata.to_string(),
+                            manifest
+                        ],
+                    )
+                    .expect("insert history fixture import");
+            }
+            transaction
+                .commit()
+                .expect("commit test import history transaction");
+            first_imported_at
+        };
+
+        let history = read_research_dataset_import_history(&database, dataset_id)
+            .expect("read import history");
+        assert_eq!(history.len(), 3);
+        assert_eq!(
+            history
+                .iter()
+                .map(|entry| entry.import_sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            history
+                .iter()
+                .map(|entry| entry.dataset_version.as_str())
+                .collect::<Vec<_>>(),
+            vec!["1.0.0", "z-version", "a-version"]
+        );
+        assert_eq!(
+            history
+                .iter()
+                .map(|entry| entry.imported_at.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                first_imported_at.as_str(),
+                "2099-12-31T23:59:59Z",
+                "1900-01-01T00:00:00Z"
+            ]
+        );
+        assert!(history.iter().all(|entry| entry.dataset_id == dataset_id));
+        assert_eq!(
+            history[1].metadata.reference_convention.references,
+            "sequence two references"
+        );
+        assert_eq!(
+            history[2].metadata.reference_convention.references,
+            "sequence three references"
+        );
+
+        assert!(
+            read_research_dataset_import_history(&database, "not-persisted")
+                .expect("unknown dataset has an empty history")
+                .is_empty()
+        );
+        assert_eq!(
+            read_research_dataset_import_history(&database, "  ")
+                .expect_err("blank dataset ID is invalid"),
+            "Dataset ID must not be blank"
         );
     }
 

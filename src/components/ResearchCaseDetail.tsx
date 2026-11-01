@@ -1,9 +1,15 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type {
   ImportedResearchCase,
   ResearchCaseRecordReference,
+  ResearchDatasetImportHistoryEntry,
 } from "../domain/researchDataset";
 import type { SourceLocator } from "../domain/research";
+import {
+  getResearchCase,
+  getResearchCaseImport,
+  getResearchDatasetImportHistory,
+} from "../lib/researchDataset";
 
 type Props = {
   researchCase: ImportedResearchCase;
@@ -120,7 +126,80 @@ function EmptySection({ children }: { children: string }) {
 }
 
 export default function ResearchCaseDetail({ researchCase, onBack }: Props) {
-  const title = researchCase.incidents[0]?.label ?? researchCase.datasetId;
+  const [displayedCase, setDisplayedCase] = useState(researchCase);
+  const [history, setHistory] = useState<ResearchDatasetImportHistoryEntry[] | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
+  const [selectionLoading, setSelectionLoading] = useState(false);
+  const [selectionError, setSelectionError] = useState("");
+
+  useEffect(() => {
+    setDisplayedCase(researchCase);
+    setHistory(null);
+    setHistoryOpen(false);
+    setHistoryError("");
+    setSelectionError("");
+  }, [researchCase]);
+
+  async function toggleHistory() {
+    if (historyOpen) {
+      setHistoryOpen(false);
+      return;
+    }
+
+    setHistoryOpen(true);
+    if (history !== null) return;
+
+    setHistoryLoading(true);
+    setHistoryError("");
+    try {
+      setHistory(await getResearchDatasetImportHistory(researchCase.datasetId));
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function selectImport(importSequence: number) {
+    if (importSequence === displayedCase.importSequence) return;
+    setSelectionLoading(true);
+    setSelectionError("");
+    try {
+      setDisplayedCase(
+        await getResearchCaseImport(researchCase.datasetId, importSequence),
+      );
+    } catch (error) {
+      setSelectionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSelectionLoading(false);
+    }
+  }
+
+  async function returnToLatest() {
+    const latestSequence =
+      history && history.length > 0
+        ? history[history.length - 1].importSequence
+        : undefined;
+    if (latestSequence === undefined || latestSequence === displayedCase.importSequence) return;
+    setSelectionLoading(true);
+    setSelectionError("");
+    try {
+      setDisplayedCase(await getResearchCase(researchCase.datasetId));
+    } catch (error) {
+      setSelectionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSelectionLoading(false);
+    }
+  }
+
+  const latestSequence =
+    history && history.length > 0
+      ? history[history.length - 1].importSequence
+      : researchCase.importSequence;
+  const isHistorical = displayedCase.importSequence !== latestSequence;
+  const title = displayedCase.incidents[0]?.label ?? displayedCase.datasetId;
 
   return (
     <div className="space-y-5">
@@ -135,25 +214,112 @@ export default function ResearchCaseDetail({ researchCase, onBack }: Props) {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-300/70">
-              Imported research dataset · v{researchCase.datasetVersion}
+              {isHistorical
+                ? `Historical import — version ${displayedCase.datasetVersion}, sequence ${displayedCase.importSequence}`
+                : `Imported research dataset · v${displayedCase.datasetVersion}`}
             </p>
             <h2 className="mt-2 text-xl font-semibold text-slate-100 sm:text-2xl">{title}</h2>
-            {researchCase.incidents.length > 1 && (
+            {displayedCase.incidents.length > 1 && (
               <p className="mt-2 text-xs text-slate-400">
-                Also recorded: {researchCase.incidents.slice(1).map((incident) => incident.label).join("; ")}
+                Also recorded: {displayedCase.incidents.slice(1).map((incident) => incident.label).join("; ")}
               </p>
             )}
             <p className="mt-2 break-all text-[11px] text-slate-500">
-              Dataset {researchCase.datasetId} · import sequence {researchCase.importSequence}
+              Dataset {displayedCase.datasetId} · import sequence {displayedCase.importSequence}
             </p>
             <p className="mt-1 text-[10px] text-slate-600">
-              Imported at {researchCase.importedAt}
+              Imported at {displayedCase.importedAt}
             </p>
           </div>
           <span className="rounded border border-cyan-200/10 bg-cyan-200/[0.04] px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-cyan-100/70">
             Persisted case
           </span>
         </div>
+        <div className="mt-5 flex flex-wrap items-center gap-2">
+          <button
+            aria-expanded={historyOpen}
+            className="rounded-lg border border-white/10 px-3 py-2 text-xs text-slate-300 transition hover:bg-white/[0.05] hover:text-white"
+            onClick={() => void toggleHistory()}
+            type="button"
+          >
+            {historyOpen ? "Hide version history" : "Version history"}
+          </button>
+          {isHistorical && (
+            <button
+              className="rounded-lg border border-cyan-200/20 bg-cyan-200/[0.06] px-3 py-2 text-xs text-cyan-100 transition hover:bg-cyan-200/[0.1] disabled:opacity-50"
+              disabled={selectionLoading}
+              onClick={() => void returnToLatest()}
+              type="button"
+            >
+              Return to latest import
+            </button>
+          )}
+        </div>
+        {historyOpen && (
+          <div className="mt-3 rounded-xl border border-white/[0.07] bg-black/10 p-4">
+            <p className="text-xs font-medium text-slate-200">Available imports</p>
+            <p className="mt-1 text-[11px] leading-5 text-slate-500">
+              Imported content follows the selected snapshot. Review details and discrepancy
+              status may reflect current workflow state.
+            </p>
+            {historyLoading && (
+              <p aria-live="polite" className="mt-3 text-xs text-slate-400">
+                Loading version history…
+              </p>
+            )}
+            {historyError && (
+              <p className="mt-3 text-xs text-rose-200" role="alert">
+                Could not load version history: {historyError}
+              </p>
+            )}
+            {history && history.length === 0 && (
+              <p className="mt-3 text-xs text-slate-400">No import history is available.</p>
+            )}
+            {history?.length === 1 && (
+              <p className="mt-3 text-xs text-slate-400">
+                This dataset has one recorded import; no older versions are available.
+              </p>
+            )}
+            {history && history.length > 0 && (
+              <ul className="mt-3 space-y-2">
+                {[...history].reverse().map((entry) => {
+                  const isSelected = entry.importSequence === displayedCase.importSequence;
+                  const isLatest = entry.importSequence === latestSequence;
+                  return (
+                    <li key={entry.importSequence}>
+                      <button
+                        aria-current={isSelected ? "true" : undefined}
+                        className="flex w-full flex-wrap items-center justify-between gap-2 rounded-lg border border-white/[0.06] px-3 py-2 text-left transition hover:bg-white/[0.04] disabled:cursor-wait disabled:opacity-60"
+                        disabled={selectionLoading || isSelected}
+                        onClick={() => void selectImport(entry.importSequence)}
+                        type="button"
+                      >
+                        <span className="text-xs text-slate-200">
+                          v{entry.datasetVersion} · sequence {entry.importSequence}
+                        </span>
+                        <span className="flex items-center gap-2 text-[10px] text-slate-500">
+                          {isLatest && <span className="text-cyan-200">Latest</span>}
+                          {isSelected && <span className="text-emerald-200">Selected</span>}
+                          <time>{entry.importedAt}</time>
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            {selectionLoading && (
+              <p aria-live="polite" className="mt-3 text-xs text-slate-400">
+                Loading selected import…
+              </p>
+            )}
+            {selectionError && (
+              <p className="mt-3 text-xs text-rose-200" role="alert">
+                Could not load the selected import: {selectionError}
+              </p>
+            )}
+          </div>
+        )}
         <p className="mt-5 rounded-lg border border-amber-200/10 bg-amber-200/[0.04] p-3 text-xs leading-5 text-amber-100/80">
           AARO’s assessment is attributed to AARO; XenoScope has not independently verified it.
         </p>
@@ -163,25 +329,25 @@ export default function ResearchCaseDetail({ researchCase, onBack }: Props) {
         </p>
       </section>
 
-      <Section title="Dates and timing · source-reported" count={researchCase.claims.filter((claim) => claim.category === "timing").length}>
-        {researchCase.claims.filter((claim) => claim.category === "timing").map((claim) => (
+      <Section title="Dates and timing · source-reported" count={displayedCase.claims.filter((claim) => claim.category === "timing").length}>
+        {displayedCase.claims.filter((claim) => claim.category === "timing").map((claim) => (
           <article className="space-y-2 px-4 py-4 sm:px-5" key={claim.record.datasetKey}>
             <p className="text-xs leading-5 text-slate-300">{claim.assertionText}</p>
             <p className="text-[11px] text-slate-400">
-              Attributed to {sourceTitle(researchCase, claim.source.datasetKey)}
+              Attributed to {sourceTitle(displayedCase, claim.source.datasetKey)}
             </p>
             <p className="break-words text-[11px] text-slate-500">
               <Locator locator={claim.sourceLocator} />
             </p>
           </article>
         ))}
-        {!researchCase.claims.some((claim) => claim.category === "timing") && (
+        {!displayedCase.claims.some((claim) => claim.category === "timing") && (
           <EmptySection>No source-reported timing claims are recorded.</EmptySection>
         )}
       </Section>
 
-      <Section title="Incident records" count={researchCase.incidents.length}>
-        {researchCase.incidents.map((incident) => (
+      <Section title="Incident records" count={displayedCase.incidents.length}>
+        {displayedCase.incidents.map((incident) => (
           <article className="space-y-3 px-4 py-4 sm:px-5" key={incident.record.datasetKey}>
             <div>
               <p className="text-xs font-medium text-slate-300">{incident.label}</p>
@@ -230,21 +396,21 @@ export default function ResearchCaseDetail({ researchCase, onBack }: Props) {
             )}
           </article>
         ))}
-        {researchCase.incidents.length === 0 && <EmptySection>No incident records are recorded.</EmptySection>}
+        {displayedCase.incidents.length === 0 && <EmptySection>No incident records are recorded.</EmptySection>}
       </Section>
 
       <Section title="Dataset reference conventions">
         <div className="space-y-2 px-4 py-4 text-xs leading-5 text-slate-400 sm:px-5">
-          <p>{researchCase.metadata.referenceConvention.recordIdentity}</p>
-          <p>{researchCase.metadata.referenceConvention.references}</p>
-          <p>{researchCase.metadata.referenceConvention.omittedRecordMetadata}</p>
+          <p>{displayedCase.metadata.referenceConvention.recordIdentity}</p>
+          <p>{displayedCase.metadata.referenceConvention.references}</p>
+          <p>{displayedCase.metadata.referenceConvention.omittedRecordMetadata}</p>
         </div>
       </Section>
 
-      <Section title="Sources" count={researchCase.sources.length}>
-        {researchCase.sources.map((source) => {
-          const access = sourceAccess(researchCase, source.record.datasetKey);
-          const metadata = sourceMetadata(researchCase, source.record.datasetKey);
+      <Section title="Sources" count={displayedCase.sources.length}>
+        {displayedCase.sources.map((source) => {
+          const access = sourceAccess(displayedCase, source.record.datasetKey);
+          const metadata = sourceMetadata(displayedCase, source.record.datasetKey);
           return (
             <article className="space-y-3 px-4 py-4 sm:px-5" key={source.record.datasetKey}>
               <div className="flex flex-wrap items-start justify-between gap-2">
@@ -328,11 +494,11 @@ export default function ResearchCaseDetail({ researchCase, onBack }: Props) {
             </article>
           );
         })}
-        {researchCase.sources.length === 0 && <EmptySection>No sources are recorded.</EmptySection>}
+        {displayedCase.sources.length === 0 && <EmptySection>No sources are recorded.</EmptySection>}
       </Section>
 
-      <Section title="Evidence items" count={researchCase.evidenceItems.length}>
-        {researchCase.evidenceItems.map((evidence) => (
+      <Section title="Evidence items" count={displayedCase.evidenceItems.length}>
+        {displayedCase.evidenceItems.map((evidence) => (
           <article className="space-y-2 px-4 py-4 sm:px-5" key={evidence.record.datasetKey}>
             <div className="flex flex-wrap justify-between gap-2">
               <h3 className="text-xs font-semibold text-slate-200">
@@ -342,20 +508,20 @@ export default function ResearchCaseDetail({ researchCase, onBack }: Props) {
             </div>
             <p className="text-xs leading-5 text-slate-400">{evidence.description}</p>
             <p className="text-[11px] text-slate-400">
-              Source: {sourceTitle(researchCase, evidence.source.datasetKey)}
+              Source: {sourceTitle(displayedCase, evidence.source.datasetKey)}
             </p>
             <p className="break-words text-[11px] leading-5 text-slate-500">
               <Locator locator={evidence.locator} />
             </p>
           </article>
         ))}
-        {researchCase.evidenceItems.length === 0 && (
+        {displayedCase.evidenceItems.length === 0 && (
           <EmptySection>No evidence items are recorded.</EmptySection>
         )}
       </Section>
 
-      <Section title="Claims" count={researchCase.claims.length}>
-        {researchCase.claims.map((claim) => (
+      <Section title="Claims" count={displayedCase.claims.length}>
+        {displayedCase.claims.map((claim) => (
           <article className="space-y-2 px-4 py-4 sm:px-5" key={claim.record.datasetKey}>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-[9px] uppercase tracking-wide text-slate-500">
@@ -367,7 +533,7 @@ export default function ResearchCaseDetail({ researchCase, onBack }: Props) {
             </div>
             <p className="text-xs leading-5 text-slate-300">{claim.assertionText}</p>
             <p className="text-[11px] text-slate-400">
-              Source: {sourceTitle(researchCase, claim.source.datasetKey)}
+              Source: {sourceTitle(displayedCase, claim.source.datasetKey)}
             </p>
             <p className="break-words text-[11px] leading-5 text-slate-500">
               <Locator locator={claim.sourceLocator} />
@@ -387,7 +553,7 @@ export default function ResearchCaseDetail({ researchCase, onBack }: Props) {
                 <p className="mt-1 text-[11px] text-slate-300">
                   {claim.authorStatedConfidence.valueAsStated} — stated by{" "}
                   {claim.authorStatedConfidence.statedBy}; source:{" "}
-                  {sourceTitle(researchCase, claim.authorStatedConfidence.source.datasetKey)}
+                  {sourceTitle(displayedCase, claim.authorStatedConfidence.source.datasetKey)}
                 </p>
                 {claim.authorStatedConfidence.locator && (
                   <p className="mt-1 break-words text-[10px] text-slate-500">
@@ -398,11 +564,11 @@ export default function ResearchCaseDetail({ researchCase, onBack }: Props) {
             )}
           </article>
         ))}
-        {researchCase.claims.length === 0 && <EmptySection>No claims are recorded.</EmptySection>}
+        {displayedCase.claims.length === 0 && <EmptySection>No claims are recorded.</EmptySection>}
       </Section>
 
-      <Section title="Relationships" count={researchCase.relationships.length}>
-        {researchCase.relationships.map((relationship) => (
+      <Section title="Relationships" count={displayedCase.relationships.length}>
+        {displayedCase.relationships.map((relationship) => (
           <article className="space-y-2 px-4 py-4 sm:px-5" key={relationship.record.datasetKey}>
             <p className="text-xs font-semibold text-slate-200">
               {formatStatus(relationship.relationshipKind)}
@@ -419,13 +585,13 @@ export default function ResearchCaseDetail({ researchCase, onBack }: Props) {
             </p>
           </article>
         ))}
-        {researchCase.relationships.length === 0 && (
+        {displayedCase.relationships.length === 0 && (
           <EmptySection>No relationships are recorded.</EmptySection>
         )}
       </Section>
 
-      <Section title="Unresolved discrepancies" count={researchCase.discrepancies.length}>
-        {researchCase.discrepancies.map((discrepancy) => (
+      <Section title="Unresolved discrepancies" count={displayedCase.discrepancies.length}>
+        {displayedCase.discrepancies.map((discrepancy) => (
           <article className="space-y-3 px-4 py-4 sm:px-5" key={discrepancy.record.datasetKey}>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="rounded border border-amber-200/10 bg-amber-200/[0.04] px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-amber-100/80">
@@ -441,7 +607,7 @@ export default function ResearchCaseDetail({ researchCase, onBack }: Props) {
                 Linked claims
               </p>
               {discrepancy.claimReferences.map((reference) => {
-                const claim = researchCase.claims.find(
+                const claim = displayedCase.claims.find(
                   (item) => item.record.id === reference.recordId,
                 );
                 return (
@@ -453,13 +619,13 @@ export default function ResearchCaseDetail({ researchCase, onBack }: Props) {
             </div>
           </article>
         ))}
-        {researchCase.discrepancies.length === 0 && (
+        {displayedCase.discrepancies.length === 0 && (
           <EmptySection>No discrepancies are recorded.</EmptySection>
         )}
       </Section>
 
-      <Section title="Dataset relationship notes" count={researchCase.metadata.relationshipNotes.length}>
-        {researchCase.metadata.relationshipNotes.map((note) => (
+      <Section title="Dataset relationship notes" count={displayedCase.metadata.relationshipNotes.length}>
+        {displayedCase.metadata.relationshipNotes.map((note) => (
           <article className="space-y-2 px-4 py-4 sm:px-5" key={note.relationshipKey}>
             <p className="break-all text-[10px] text-slate-500">{note.relationshipKey}</p>
             <p className="text-xs leading-5 text-slate-400">{note.basis}</p>
@@ -468,13 +634,13 @@ export default function ResearchCaseDetail({ researchCase, onBack }: Props) {
             </p>
           </article>
         ))}
-        {researchCase.metadata.relationshipNotes.length === 0 && (
+        {displayedCase.metadata.relationshipNotes.length === 0 && (
           <EmptySection>No relationship notes are recorded.</EmptySection>
         )}
       </Section>
 
-      <Section title="Findings" count={researchCase.findings.length}>
-        {researchCase.findings.map((finding) => (
+      <Section title="Findings" count={displayedCase.findings.length}>
+        {displayedCase.findings.map((finding) => (
           <article className="space-y-2 px-4 py-4 sm:px-5" key={finding.record.datasetKey}>
             <p className="text-xs leading-5 text-slate-300">{finding.assessment}</p>
             <p className="text-[11px] text-slate-500">
@@ -489,7 +655,7 @@ export default function ResearchCaseDetail({ researchCase, onBack }: Props) {
             ))}
           </article>
         ))}
-        {researchCase.findings.length === 0 && (
+        {displayedCase.findings.length === 0 && (
           <EmptySection>No findings are recorded in this dataset version.</EmptySection>
         )}
       </Section>
