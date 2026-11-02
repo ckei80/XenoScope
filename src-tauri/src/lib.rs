@@ -2,9 +2,15 @@ mod database;
 #[allow(dead_code)]
 mod research_assessment;
 #[allow(dead_code)]
+mod research_candidate;
+#[allow(dead_code)]
+mod research_candidate_read;
+#[allow(dead_code)]
 mod research_dataset;
 mod research_dataset_import;
 mod research_dataset_read;
+#[allow(dead_code)]
+mod research_decision;
 mod research_records;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
