@@ -76,7 +76,8 @@ pub(crate) struct CandidateCorpus {
     pub source_dependency_records: Vec<CandidateSourceDependencyRecord>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct GeneratedCandidateCorpus {
     pub candidates: Vec<IncidentPairCandidate>,
     pub suppressed_buckets: Vec<SuppressedIndexBucket>,

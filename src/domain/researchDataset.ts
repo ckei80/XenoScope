@@ -246,3 +246,127 @@ export interface ResearchCaseListEntry {
   recordCounts: ResearchCaseRecordCounts;
   discrepancyStatusCounts: ResearchCaseDiscrepancyCounts;
 }
+
+export interface ResearchCandidate {
+  incidentId: string;
+  incidentLabel: string;
+  candidateCount: number;
+  evidenceItemCount: number;
+  claimCount: number;
+  relationshipCount: number;
+  discrepancyCount: number;
+  findingCount: number;
+  latestImportedAt: string;
+  datasetVersion: string;
+}
+
+// ── Candidate retrieval (candidate-corpus) ──────────────────────────────
+
+/** One candidate pair with its supporting / tension signals. */
+export interface CandidatePair {
+  leftIncidentId: string;
+  rightIncidentId: string;
+  generatedBy: RetrievalPass[];
+  tensionSignals: TensionSignal[];
+  supportingSignals: SupportingSignal[];
+}
+
+/** Which retrieval pass contributed this candidate pair. */
+export type RetrievalPass =
+  | "timeOverlap"
+  | "namedPlace"
+  | "sharedSource"
+  | "sharedDependentSource"
+  | "text";
+
+/** Tension signals (evidence of incompatibility between the pair). */
+export type TensionSignal =
+  | { kind: "nonOverlappingPrecisePeriods"; left: string; right: string }
+  | { kind: "nonOverlappingPrecisePeriodsBounded"; leftStart: string; leftEnd: string; rightStart: string; rightEnd: string }
+  | { kind: "nonOverlappingPrecisePeriodsBoundedAsymmetric"; leftStart: string; leftEnd: string; rightStart: string; rightEnd: string; leftIsBounded: boolean; rightIsBounded: boolean }
+  | { kind: "nonOverlappingPrecisePeriodsBoundedAsymmetricReversed"; leftStart: string; leftEnd: string; rightStart: string; rightEnd: string; leftIsBounded: boolean; rightIsBounded: boolean }
+  | { kind: "differentNamedPlace"; left: string; right: string }
+  | { kind: "differentBoundedRegions"; left: string; right: string }
+  | { kind: "differentApproximateAreas"; left: string; right: string };
+
+/** Supporting signals (evidence of linkage between the pair). */
+export type SupportingSignal =
+  | { kind: "sharedTextTerms"; terms: string[]; claimProvenance: SharedTextTermProvenance[] }
+  | { kind: "sharedSource"; leftSourceId: string; rightSourceId: string }
+  | { kind: "sharedDependentSource"; leftSourceId: string; rightSourceId: string; relation: string }
+  | { kind: "sharedNamedPlace"; place: string }
+  | { kind: "overlappingBoundedRegions"; left: string; right: string }
+  | { kind: "overlappingApproximateAreas"; left: string; right: string };
+
+/** A term and the claims on each side that contain it. */
+export interface SharedTextTermProvenance {
+  term: string;
+  leftClaims: CandidateClaimProvenance[];
+  rightClaims: CandidateClaimProvenance[];
+}
+
+/** Full candidate corpus returned by the candidate-corpus endpoint. */
+export interface CandidateCorpus {
+  candidates: CandidatePair[];
+  suppressedBuckets: SuppressedIndexBucket[];
+  selectedImports: SelectedDatasetImport[];
+  incidentProvenance: CandidateIncidentProvenance[];
+  claimProvenance: CandidateClaimProvenance[];
+  sourceOrigins: Record<string, CandidateSourceOrigin[]>;
+  sourceDependencyRecords: CandidateSourceDependencyRecord[];
+}
+
+/** A term bucket that was suppressed because it appeared in too many incidents. */
+export interface SuppressedIndexBucket {
+  term: string;
+  reason: string;
+}
+
+/** Metadata about a dataset import that was selected for candidate generation. */
+export interface SelectedDatasetImport {
+  datasetId: string;
+  datasetVersion: string;
+  importSequence: number;
+  importedAt: string;
+}
+
+/** Provenance linking a candidate pair back to its source incident record. */
+export interface CandidateIncidentProvenance {
+  databaseId: string;
+  datasetId: string;
+  datasetKey: string;
+  datasetVersion: string;
+  importSequence: number;
+  importedAt: string;
+}
+
+/** Provenance linking a candidate pair back to a specific claim record. */
+export interface CandidateClaimProvenance {
+  databaseId: string;
+  datasetId: string;
+  datasetKey: string;
+  incidentId: string;
+  sourceId: string;
+}
+
+/** A source that appeared in the manifest of a selected import. */
+export interface CandidateSourceOrigin {
+  datasetId: string;
+  datasetKey: string;
+}
+
+/** A source-dependency relationship record from the database. */
+export interface CandidateSourceDependencyRecord {
+  relationshipRecordId: string;
+  datasetId: string;
+  datasetKey: string;
+  edge: CandidateSourceDependencyEdge;
+}
+
+/** The edge direction and kind for a source dependency. */
+export interface CandidateSourceDependencyEdge {
+  relationshipRecordId: string;
+  fromSourceId: string;
+  toSourceId: string;
+  kind: "quotes" | "repeats" | "derivedFrom";
+}

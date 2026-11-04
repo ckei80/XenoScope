@@ -3,7 +3,6 @@ mod database;
 mod research_assessment;
 #[allow(dead_code)]
 mod research_candidate;
-#[allow(dead_code)]
 mod research_candidate_read;
 #[allow(dead_code)]
 mod research_dataset;
@@ -13,10 +12,17 @@ mod research_dataset_read;
 mod research_decision;
 mod research_records;
 
+use research_candidate_read::GeneratedCandidateCorpus;
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
+}
+
+#[tauri::command]
+fn get_latest_incident_candidates(db: tauri::State<database::Database>) -> Result<GeneratedCandidateCorpus, String> {
+    research_candidate_read::generate_latest_incident_candidates(&db)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -49,6 +55,7 @@ pub fn run() {
             research_dataset_read::get_research_case,
             research_dataset_read::get_research_case_import,
             research_dataset_read::get_research_dataset_import_history,
+            get_latest_incident_candidates,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

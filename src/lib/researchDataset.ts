@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  CandidateCorpus,
   ImportedResearchCase,
   ResearchCaseListEntry,
   ResearchDatasetImportHistoryEntry,
@@ -38,4 +39,8 @@ export function getResearchDatasetImportHistory(
   return invoke<ResearchDatasetImportHistoryEntry[]>("get_research_dataset_import_history", {
     datasetId,
   });
+}
+
+export function getLatestCandidateCorpus(): Promise<CandidateCorpus> {
+  return invoke<CandidateCorpus>("get_latest_incident_candidates");
 }
